@@ -1,0 +1,950 @@
+---
+title: "5P data process"
+author: "Bowen Li"
+date: "2024-10-25"
+output: pdf_document
+---
+
+
+
+
+
+```{r}
+library(ncdf4)
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(leaflet) # plotting spatial data
+library(sf) # handle simple features objects
+library(units) # set_units() for converting units objects
+library(openxlsx)
+library(knitr)
+library(kableExtra)
+library(tidyr)
+library(xgboost)
+library(Metrics)
+library(caret)  # For creating folds
+
+```
+
+
+
+```{r}
+labels <- c("CO","HCHO","NO2","O3",'SO2','CH4','AER_AI_340_380','AER_AI_354_388','CLOUD_BASE_PRESSURE','CLOUD_TOP_PRESSURE','CLOUD_BASE_HEIGHT','CLOUD_TOP_HEIGHT','CLOUD_OPTICAL_THICKNESS','CLOUD_FRACTION')
+```
+
+
+
+
+```{r}
+data_frames_list <- list()
+# Loop through labels and open corresponding .nc files
+for (i in seq_along(labels)) {
+  # Assuming the file name structure is based on the label
+  file_path <- paste0("5P_data_2/", labels[i], "/", labels[i], ".nc")
+
+  # Try to open the file and check if it exists
+  if (file.exists(file_path)) {
+    nc_file <- nc_open(file_path)
+    longitude <- ncvar_get(nc_file, "x")
+    latitude <- ncvar_get(nc_file, "y")
+    time <- ncvar_get(nc_file, "t")
+    var <- ncvar_get(nc_file, labels[i])
+
+    grid <- expand.grid(
+      Longitude = longitude,
+      Latitude = latitude,
+      Time = time
+    )
+
+    var_flat <- as.vector(var)
+
+    # Combine the grid and labels data
+    df <- cbind(grid, setNames(list(var_flat), labels[i]))
+
+    # Convert to data frame
+    df <- as.data.table(df)
+    data_frames_list[[i]] <- df
+
+    # close the file after use
+    nc_close(nc_file)
+  }
+}
+
+
+```
+
+
+```{r}
+#data_frames_list
+```
+
+
+
+```{r}
+
+
+#latitude <- c("23.76","23.76","23.78","23.99", "23.63", "22.36", "22.32", "24.89", "22.84","24.38", "22.71", #"23.95" ,"25.73" , "24.76","23.47", "23.93")
+
+#longitude <- c("90.39","90.39","90.36", "90.42", "90.51", "91.80", "91.81", "91.87", "89.53", #"88.61","90.36", "90.28", "89.25","90.40","91.18", "90.72")
+
+#use stupid way to filter data.
+
+data_frames_list <- lapply(data_frames_list, function(dt) {
+  dt[
+    (Longitude >= 88.61 - 0.05 & Longitude <= 88.61 + 0.05 & Latitude >= 24.38 - 0.05 & Latitude <= 24.38 + 0.05) |
+    (Longitude >= 89.25 - 0.05 & Longitude <= 89.25 + 0.05 & Latitude >= 25.73 - 0.05 & Latitude <= 25.73 + 0.05) |
+    (Longitude >= 90.36 - 0.05 & Longitude <= 90.36 + 0.05 & Latitude >= 23.78 - 0.05 & Latitude <= 23.78 + 0.05) |
+    (Longitude >= 90.39 - 0.05 & Longitude <= 90.39 + 0.05 & Latitude >= 23.76 - 0.05 & Latitude <= 23.76 + 0.05) |
+    (Longitude >= 90.42 - 0.05 & Longitude <= 90.42 + 0.05 & Latitude >= 23.99 - 0.05 & Latitude <= 23.99 + 0.05) |
+    (Longitude >= 90.51 - 0.05 & Longitude <= 90.51 + 0.05 & Latitude >= 23.63 - 0.05 & Latitude <= 23.63 + 0.05) |
+    (Longitude >= 91.80 - 0.05 & Longitude <= 91.80 + 0.05 & Latitude >= 22.36 - 0.05 & Latitude <= 22.36 + 0.05) |
+    (Longitude >= 91.81 - 0.05 & Longitude <= 91.81 + 0.05 & Latitude >= 22.32 - 0.05 & Latitude <= 22.32 + 0.05) |
+    (Longitude >= 91.87 - 0.05 & Longitude <= 91.87 + 0.05 & Latitude >= 24.89 - 0.05 & Latitude <= 24.89 + 0.05) |
+    (Longitude >= 89.53 - 0.05 & Longitude <= 89.53 + 0.05 & Latitude >= 22.84 - 0.05 & Latitude <= 22.84 + 0.05) |
+    (Longitude >= 90.36 - 0.05 & Longitude <= 90.36 + 0.05 & Latitude >= 22.71 - 0.05 & Latitude <= 22.71 + 0.05) |
+    (Longitude >= 90.28 - 0.05 & Longitude <= 90.28 + 0.05 & Latitude >= 23.95 - 0.05 & Latitude <= 23.95 + 0.05) |
+    (Longitude >= 90.40 - 0.05 & Longitude <= 90.40 + 0.05 & Latitude >= 24.76 - 0.05 & Latitude <= 24.76 + 0.05) |
+    (Longitude >= 91.18 - 0.05 & Longitude <= 91.18 + 0.05 & Latitude >= 23.47 - 0.05 & Latitude <= 23.47 + 0.05) |
+    (Longitude >= 90.72 - 0.05 & Longitude <= 90.72 + 0.05 & Latitude >= 23.93 - 0.05 & Latitude <= 23.93 + 0.05)
+  ]
+})
+
+#data_frames_list
+
+```
+
+```{r}
+
+# Use Reduce to merge all data.tables in the list
+
+Sentinel_5p <- Reduce(function(x, y) merge(x, y, by = c("Longitude", "Latitude", "Time"), all = TRUE), data_frames_list)
+
+# View the merged result
+head(Sentinel_5p)  #temporal_extent <- c("2018-04-29", "2022-01-01") 
+
+```
+
+
+
+
+```{r}
+
+
+
+# Create a list to store data from all sheets
+df_list <- list()
+
+city <- c("Dhaka","Dhaka","Dhaka","Gazipur", "Narayanganj", "Chattogram", "Chattogram", "Sylhet", "Khulna","Rajshahi", "Barishal", "Savar" ,"Rangpur" , "Mymensingh","Cumilla", "Narsingdi")
+
+# latitude & longitude vectors 
+latitude <- c("23.76","23.76","23.78","23.99", "23.63", "22.36", "22.32", "24.89", "22.84","24.38", "22.71", "23.95" ,"25.73" , "24.76","23.47", "23.93")
+
+longitude <- c("90.39","90.39","90.36", "90.42", "90.51", "91.80", "91.81", "91.87", "89.53", "88.61","90.36", "90.28", "89.25","90.40","91.18", "90.72")
+
+# Exclude sheets 1, 2 , 3 , 10, 13
+sheet_indices <- setdiff(1:16, c())  # Sheets 4, 5, 6, 7, 8, 9, 11, 12, 14, 15, 16 remain
+
+# Loop through selected sheets
+for (j in seq_along(sheet_indices)) {  # `j` is the index within our new valid sheets
+  i <- sheet_indices[j]  # Original sheet number
+  
+  # Read each sheet
+  df <- read.xlsx("Public DataBase updated.xlsx_20122021.xlsx", sheet = i, colNames = TRUE, detectDates = TRUE)
+  
+  # Remove first row and select relevant columns
+  df <- df[-1, ] %>%
+    select(Date, PM2.5, Wind.Speed, Wind.Dir, Temperature, RH, Rain,SO2, NO, NO2,CO,O3)
+
+  # Standardize date format
+  df$Date <- case_when(
+    grepl("^\\d{2}/\\d{2}/\\d{4}$", df$Date) ~ as.character(as.Date(df$Date, format = "%d/%m/%Y")),
+    TRUE ~ as.character(df$Date)  # Keep other values unchanged
+  )
+  
+      # Apply transformation only if Date is numeric
+  df$Date <- ifelse(
+    suppressWarnings(!is.na(as.numeric(df$Date))),  # Check if Date is numeric
+    as.character(as.Date(floor(as.numeric(df$Date)), origin = "1899-12-30")),  # Convert integer part to Date
+    df$Date  # Keep non-numeric values unchanged
+  )
+
+  # If i == 6, replace NA dates with "2020-12-31"
+  if (i == 6) {
+    df$Date <- ifelse(is.na(df$Date), "2020-12-31", df$Date)
+  }
+  
+  # If i == 15, replace NA dates with "2020-11-26"
+  if (i == 15) {
+    df$Date <- ifelse(is.na(df$Date), "2020-11-26", df$Date)
+  }
+  
+
+  # If i == 10, drop rows where Date is NA
+  if (i == 10) {
+    df <- df %>% filter(!is.na(Date))
+  }
+  
+  df$Date <- as.Date(df$Date)
+  
+  
+  
+    # Assign corresponding latitude & longitude
+  df <- df %>%
+    mutate(Latitude = latitude[j], Longitude = longitude[j], City = city[j])  # Match index to available values
+
+  setDT(df)
+ 
+  # Store the processed sheet in the list
+  df_list[[i]] <- df
+  
+  
+
+  
+
+
+}
+
+# Combine all sheets into one data.table
+final_dt <- rbindlist(df_list, idcol = "Sheet")  # Use rbindlist for efficient merging
+
+
+
+```
+
+```{r}
+
+final_dt
+```
+
+
+
+```{r}
+
+# Rename columns
+setnames(final_dt, old = c("Date", "PM2.5", "Wind.Speed", "Wind.Dir", "Temperature", "RH", "Rain", "SO2","NO","NO2","CO","O3", "Latitude", "Longitude"),
+                   new = c("Date", "PM2.5", "Wind Spd", "Wind Dir","Avg Temp", "Avg Hum", "Daily Total Rainfall", "SO2_land","NO_land","NO2_land","CO_land","O3_land", "PM y", "PM x"))
+
+# Convert the Date column to the format "DD-MMM-YY"
+final_dt[, Date := format(Date, "%d-%b-%y")]
+```
+
+```{r}
+final_dt
+```
+
+
+```{r}
+# Convert Date to day number since 1990-01-01
+final_dt$Time <- as.numeric(as.Date(final_dt$Date, format = "%d-%b-%y") - as.Date("1990-01-01"))
+
+
+ 
+# Convert all columns except Date to numeric
+numeric_cols <- setdiff(names(final_dt),c("Date", "City"))  # Exclude Date column
+final_dt[, (numeric_cols) := lapply(.SD, function(x) as.numeric(as.character(x))), .SDcols = numeric_cols]
+```
+
+```{r}
+final_dt
+```
+
+```{r}
+# Group by Date and compute average for all numeric columns
+final_dt <- final_dt[, c(lapply(.SD, mean, na.rm = TRUE), 
+                                   .(Date= unique(Date)[1], City= unique(City)[1])),         # Use the first unique value
+                                by = .(`PM x`, `PM y`, Time), 
+                                .SDcols = numeric_cols]
+
+
+```
+
+
+```{r}
+final_dt <- final_dt %>% select(-c(1:3))
+
+
+
+
+
+```
+
+
+```{r}
+final_dt
+```
+```{r}
+library(ggplot2)
+
+# Assuming 'city' is the column with city names and 'pm25' is the PM2.5 column
+ggplot(final_dt, aes(x =PM2.5 , y =City )) +
+  geom_boxplot(fill = "skyblue", color = "darkblue") +
+  labs(
+    title = "Boxplot of PM2.5 by City",
+    x = "PM2.5",
+    y = "City"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+```{r}
+final_dt$Date <- as.Date(final_dt$Date, format = "%d-%b-%y")
+
+
+final_dt$Year <- format(final_dt$Date, "%Y")
+
+
+final_dt$Month <- format(final_dt$Date, "%m")
+
+final_dt
+```
+```{r}
+library(tidyverse)
+library(lubridate)
+
+
+# Filter data for 2021
+final_dt_2021 <- final_dt %>%
+  filter(Year== "2021")
+```
+
+
+```{r}
+# Plot
+ggplot(final_dt_2021, aes(x = Date, y = PM2.5)) +
+  geom_line() +
+  facet_wrap(~ City, scales = "free_y") +
+  labs(title = "PM2.5 Time Series by City (2021)",
+       x = "Date", y = "PM2.5") +
+  theme_minimal()
+
+```
+```{r}
+ggplot(final_dt_2021, aes(x = Date, y = PM2.5, color = City)) +
+  geom_line() +
+  labs(title = "PM2.5 Time Series by City (2021)",
+       x = "Date", y = "PM2.5") +
+  theme_minimal()
+
+```
+```{r}
+library(dplyr)
+library(ggplot2) #dahka, rajshahi, rangpur, gazipur, narsingdi
+
+# Randomly select 5 cities
+set.seed(123)  # for reproducibility
+sample_cities <- c("Dhaka", "Rajshahi", "Rangpur", "Gazipur", "Narsingdi")
+
+# Filter data for those cities
+subset_dt <- final_dt_2021 %>%
+  filter(City %in% sample_cities)
+
+# Plot
+ggplot(subset_dt, aes(x = Date, y = PM2.5, color = City)) +
+  geom_line(size = 1) +
+  labs(title = "PM2.5 Time Series for 5 Random Cities (2021)",
+       x = "Date", y = "PM2.5") +
+  theme_minimal()
+
+```
+```{r}
+final_dt <- final_dt %>% select(-c(1))
+
+
+```
+
+
+```{r}
+final_dt
+```
+
+```{r}
+write.csv(final_dt, "Cleaned_PM2.5.csv", row.names = FALSE)
+```
+
+
+```{r}
+final_dt <- final_dt %>% select(-c(16,17,18))
+```
+
+
+```{r}
+final_dt$Date <- as.character(format(final_dt$Date, "%d-%b-%y"))
+
+
+
+
+```
+
+
+```{r}
+final_dt
+```
+
+
+
+
+```{r}
+
+setDT(final_dt)
+
+# Combine both datasets, keeping all columns
+out_door <- rbindlist(list(final_dt), use.names = TRUE, fill = TRUE)
+
+```
+
+```{r}
+head(out_door) # Print final combined dataset
+```
+
+
+
+
+```{r}
+
+#out_door_clean <- out_door[!is.na(x) & !is.na(y)]
+out_door_sf <- st_as_sf(out_door, coords = c("PM x", "PM y"), crs = 4326)
+out_door_utm <- st_transform(out_door_sf, crs = 32645)
+#remove = False
+#print(out_door_utm)
+```
+
+```{r}
+#Do buffer
+
+out_door_buffers = out_door_utm %>% st_buffer(dist=5e3)
+#5.5* km x 3.5 km for 5P
+
+
+```
+
+```{r}
+out_door_buffers %>% 
+  ggplot() +
+  geom_sf() +
+  geom_sf(data=out_door_sf , color='red')
+```
+
+```{r}
+Sentinel_5p_sf <- st_as_sf(Sentinel_5p, coords = c("Longitude", "Latitude"), crs = 4326)
+Sentinel_5p_utm <- st_transform(Sentinel_5p_sf, crs = 32645)
+```
+
+
+```{r}
+# Suppose `Sentinel_5p_utm` is your spatial dataset
+#chunk_size <- 1000  # Define the size of each chunk
+#num_chunks <- ceiling(nrow(Sentinel_5p_utm) / chunk_size)  # Number of chunks
+
+# Create chunks using a loop or split
+#chunks <- split(Sentinel_5p_utm, ceiling(seq_len(nrow(Sentinel_5p_utm)) / chunk_size))
+
+```
+
+
+
+```{r}
+#st_nearest_feature()
+inersections <- st_intersects(Sentinel_5p_utm, out_door_buffers)
+#average if two points in the buffer by day and site
+```
+
+
+
+```{r}
+
+# Extract non-empty results
+non_empty_indices <- which(lengths(inersections) > 0)
+
+# Create an empty list to store merged results
+merged_results <- list()
+
+# Loop through non-empty intersections and merge corresponding data
+for (i in non_empty_indices) {
+  intersecting_indices <- inersections[[i]]
+  
+  # Extract corresponding rows using data.table
+  sentinel_data <- Sentinel_5p[i,]  # Select row i from Sentinel_5p
+  sentinel_data$buffer_index <- i # Add a column to track the original index
+  buffer_data <- out_door[intersecting_indices,]  # Select corresponding rows from out_door_clean
+  
+  # Assuming both have a 'Time' column, use it to merge
+  merged_data <- merge(sentinel_data, buffer_data, by = "Time", all = FALSE)
+  
+  # Append to results list
+  merged_results[[length(merged_results) + 1]] <- merged_data
+}
+
+
+
+```
+
+
+
+```{r}
+library(data.table)
+# Combine all merged results into a single data.table
+final_merged <- rbindlist(merged_results, fill = TRUE)
+
+# Print the final merged data table
+#print(final_merged)
+
+#final_merged[Time == 10406]
+```
+
+```{r}
+
+
+# Identify numeric columns (exclude 'Date')
+numeric_cols <- names(final_merged)[sapply(final_merged, is.numeric)]
+
+# Group by 'PM x', 'PM y', 'Time' and summarize other columns
+final_averaged <- final_merged[, c(lapply(.SD, mean, na.rm = TRUE), 
+                                   .(date = unique(Date)[1])),         # Use the first unique value
+                                by = .(`PM x`, `PM y`, Time), 
+                                .SDcols = numeric_cols]
+
+# Remove duplicate column names by ensuring uniqueness
+setnames(final_averaged, make.unique(names(final_averaged)))
+
+# View the corrected result
+head(final_averaged)
+
+```
+
+
+```{r}
+#summary(as.factor(final_averaged$buffer_index))
+```
+
+
+```{r}
+#unique(final_averaged$`PM x`)
+#unique(final_averaged$`PM y`)
+```
+
+```{r}
+#final_averaged[`PM x` == 90.3888 & `PM y` == 23.7596 ]
+
+#final_averaged[`PM x` == 90.3600  & `PM y` == 23.7800  ]
+```
+
+
+```{r}
+
+
+# Extract unique locations
+unique_locations <- final_averaged %>%
+  distinct(`PM x`, `PM y`)  # Only get unique locations
+
+unique_locations
+
+```
+
+```{r}
+
+# Filter the original dataset for this specific location
+filtered_data <- final_averaged[`PM x` == unique_locations$`PM x`[1] & `PM y` == unique_locations$`PM y`[1]]
+
+# Plot PM2.5 vs SO2 for this specific location
+ggplot(filtered_data, aes(x =`AER_AI_340_380` , y = `PM2.5`)) + 
+  geom_point(color = "blue", size = 3, alpha = 0.7) + # Scatter plot points
+  labs(
+    title = "PM2.5 vs AER_AI_340_380 for First Unique Location") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12)
+  )
+
+ggplot(filtered_data, aes(x =`AER_AI_354_388` , y = `PM2.5`)) + 
+  geom_point(color = "blue", size = 3, alpha = 0.7) + # Scatter plot points
+  labs(
+    title = "PM2.5 vs AER_AI_354_388 for First Unique Location") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12)
+  )
+
+
+```
+
+
+```{r}
+#final_averaged[date == "31-Dec-21"]
+
+final_averaged$O3[final_averaged$O3 > 1] <- NA
+
+```
+
+```{r}
+summary(final_averaged) #correlation matrix co HCHO NO2 O3 SO2 CLOUD_FRACTION   y = pM2.5
+
+
+
+head(final_averaged) #xgboost
+
+
+
+write.csv(final_averaged, "cor.csv", row.names = FALSE)
+
+
+```
+
+
+
+
+```{r}
+# Read the CSV file into a data frame
+data <- read.csv("cor.csv")
+```
+
+```{r}
+# Ensure the date column is properly formatted as a Date object
+data$date <- as.Date(data$date, format = "%d-%b-%y")
+
+# Extract the year from the date
+data$Year <- format(data$date, "%Y")
+
+
+data$Month <- format(data$date, "%m")
+
+```
+
+
+
+```{r}
+# Load necessary libraries
+library(xgboost)
+library(caret)
+library(Metrics)
+data$Year <- as.numeric(data$Year)
+
+
+data$Month <- as.numeric(data$Month)
+
+final_averaged_clean <- data[!is.na(data$PM2.5), ] #check missing value for each variable
+# X: CO, HCHO, NO2, O3, SO2, CLOUD_FRACTION,AER_AI_354_388, LOCATION, MONTH,temp,hum,wind speed ...   #barplot by month for each variable (No2 ...) count observation by month or year #random forest 
+# y: PM2.5
+
+head(data)
+```
+
+
+
+```{r}
+# Load necessary libraries
+library(xgboost)
+library(caret)
+library(Metrics)
+data$Year <- as.numeric(data$Year)
+
+
+data$Month <- as.numeric(data$Month)
+
+final_averaged_clean <- data[!is.na(data$PM2.5), ] #check missing value for each variable
+# X: CO, HCHO, NO2, O3, SO2, CLOUD_FRACTION,AER_AI_354_388, LOCATION, MONTH,temp,hum,wind speed ...   #barplot by month for each variable (No2 ...) count observation by month or year #random forest 
+# y: PM2.5
+
+head(data)
+```
+```{r}
+data$CO_land <- data$CO_land*1000 #convert ppm to ppb
+#convert mol/m^2 approx to ppb
+data$CO <- data$CO * 2240
+data$HCHO <- data$HCHO  * 2240
+data$NO2 <- data$NO2  * 2240
+data$O3 <- data$O3  * 2240
+data$SO2 <- data$SO2 * 2240
+```
+
+```{r}
+data
+```
+
+
+
+
+```{r}
+library(corrplot)  # For visualization
+library(tidyr)
+#sea level pressure 
+# Compute the correlation matrix
+cor_matrix <- cor(data[, c("CO", "NO2", "O3", "SO2", "SO2_land","NO2_land","CO_land","O3_land")], use = "complete.obs")  # Exclude NA values
+
+# Print the correlation matrix
+print(cor_matrix)
+
+# Visualize the correlation matrix
+corrplot(cor_matrix, method = "color", type = "upper", tl.col = "black", tl.cex = 0.8)
+
+```
+
+
+```{r}
+# Read the CSV file into a data frame
+data <- read.csv("cor.csv")
+```
+
+```{r}
+# Ensure the date column is properly formatted as a Date object
+data$date <- as.Date(data$date, format = "%d-%b-%y")
+
+# Extract the year from the date
+data$Year <- format(data$date, "%Y")
+
+
+data$Month <- format(data$date, "%m")
+
+#data
+```
+
+
+```{r}
+# Load necessary libraries
+library(corrplot)  # For visualization
+library(tidyr)
+
+# Compute the correlation matrix
+cor_matrix <- cor(data[, c("CO", "HCHO", "NO2", "O3", "SO2", "CLOUD_FRACTION","AER_AI_340_380", "AER_AI_354_388","PM2.5")], use = "complete.obs")  # Exclude NA values
+
+# Print the correlation matrix
+print(cor_matrix)
+
+# Visualize the correlation matrix
+corrplot(cor_matrix, method = "color", type = "upper", tl.col = "black", tl.cex = 0.8)
+
+```
+
+
+```{r}
+
+
+# Reshape data and count non-missing values by month and year for each variable
+monthly_counts <- data %>%
+  pivot_longer(cols = c(CO, HCHO, NO2, O3, SO2, CLOUD_FRACTION, AER_AI_354_388), 
+               names_to = "Variable", 
+               values_to = "Value") %>%
+  group_by(Year, Month, Variable) %>%
+  summarise(Count = sum(!is.na(Value))) %>%
+  ungroup()
+
+
+
+monthly_counts <- monthly_counts%>% filter(Year == "2021")
+
+
+
+# Create bar plot for monthly counts by year
+ggplot(monthly_counts, aes(x = Month, y = Count, fill = Variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ Year, scales = "free_x") +
+  labs(title = "Monthly Observation Counts for Each Variable by 2021 Year",
+       x = "Month",
+       y = "Count of Observations") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+
+```{r}
+
+
+# Reshape data and count unique dates by month, year, longitude, latitude, and variable
+monthly_counts <- data %>%
+  pivot_longer(cols = c(CO, HCHO, NO2, O3, SO2, CLOUD_FRACTION, AER_AI_354_388), 
+               names_to = "Variable", 
+               values_to = "Value") %>%
+  group_by(Longitude, Latitude, Year, Month, Variable) %>%
+  summarise(Count = sum(!is.na(Value))) %>%
+  ungroup()
+
+print(monthly_counts)
+
+
+library(ggplot2)
+
+# Combine Longitude and Latitude for easier facet labeling
+monthly_counts <- monthly_counts %>%
+  mutate(Location = paste("Lon:", Longitude, "Lat:", Latitude))
+
+# Create bar plot for monthly counts by location
+ggplot(monthly_counts, aes(x = Month, y = Count, fill = Variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ Location + Year) +
+  labs(title = "Monthly Observation Counts for Each Variable by Location (Longitude & Latitude)",
+       x = "Month",
+       y = "Count of Unique Days") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+```{r}
+head(data)
+```
+
+
+
+```{r}
+data$PM2.5 <- log(data$PM2.5)
+# Load necessary libraries
+library(xgboost)
+library(caret)
+library(Metrics)
+data$Year <- as.numeric(data$Year)
+
+
+data$Month <- as.numeric(data$Month)
+
+final_averaged_clean <- data[!is.na(data$PM2.5), ] #check missing value for each variable
+# X: CO, HCHO, NO2, O3, SO2, CLOUD_FRACTION,AER_AI_354_388, LOCATION, MONTH,temp,hum,wind speed ...   #barplot by month for each variable (No2 ...) count observation by month or year #random forest 
+# y: PM2.5
+
+head(data)
+```
+
+```{r}
+#sea level pressure 
+# Compute the correlation matrix
+cor_matrix <- cor(data[, c("CO", "HCHO", "NO2", "O3", "SO2", "SO2_land","NO_land","NO2_land","CO_land","O3_land")], use = "complete.obs")  # Exclude NA values
+
+# Print the correlation matrix
+print(cor_matrix)
+
+# Visualize the correlation matrix
+corrplot(cor_matrix, method = "color", type = "upper", tl.col = "black", tl.cex = 0.8)
+```
+
+```{r}
+
+
+summary(data)
+```
+
+
+```{r}
+
+
+set.seed(497)
+index <- createDataPartition(final_averaged_clean$PM2.5, p = 0.8, list = FALSE)
+train_data <- final_averaged_clean[index, ]
+test_data <- final_averaged_clean[-index, ]
+
+# Prepare data for xgboost
+train_matrix <- as.matrix(train_data[, c("CO", "HCHO", "NO2", "O3", "SO2", "CLOUD_FRACTION", "AER_AI_354_388","PM.x", "PM.y", "Month" , "Avg.Temp", "Avg.Hum","Wind.Spd", "Wind.Dir", "Daily.Total.Rainfall" )])
+test_matrix <- as.matrix(test_data[, c("CO", "HCHO", "NO2", "O3", "SO2", "CLOUD_FRACTION", "AER_AI_354_388","PM.x", "PM.y", "Month" , "Avg.Temp", "Avg.Hum","Wind.Spd", "Wind.Dir", "Daily.Total.Rainfall")])
+
+train_label <- train_data$PM2.5
+test_label <- test_data$PM2.5
+
+# Train the xgboost model
+xgb_model <- xgboost(
+  data = train_matrix,
+  label = train_label,
+  nrounds = 100,verbose = 0)
+
+# Predict on the test set
+predictions <- predict(xgb_model, test_matrix)
+
+# Evaluate model performance
+rmse_value <- rmse(exp(test_label), exp(predictions))
+mae_value <- mae(exp(test_label), exp(predictions))
+r2_value <- cor(exp(test_label), exp(predictions))^2
+mse_value <- mean((exp(predictions) - exp(test_label))^2)
+
+# Print evaluation metrics
+cat("RMSE:", rmse_value, "\n")
+cat("MAE:", mae_value, "\n")
+cat("R²:", r2_value, "\n")
+
+cat("MSE:", mse_value, "\n")
+
+```
+
+
+
+```{r}
+# Calculate feature importance
+importance_matrix <- xgb.importance(feature_names = colnames(train_matrix), model = xgb_model)
+
+# Print the importance matrix
+print(importance_matrix)
+
+# Plot feature importance
+xgb.plot.importance(importance_matrix)
+
+```
+
+
+```{r}
+#select varibales such as CO in new data and compare to sentinel 5p data. correlation matrix
+
+
+set.seed(497)
+
+# Define predictor variables
+features <- c("CO", "HCHO", "NO2", "O3", "SO2", "CLOUD_FRACTION", 
+              "AER_AI_354_388", "PM.x", "PM.y", "Month", "Avg.Temp", 
+              "Avg.Hum", "Wind.Spd", "Wind.Dir", "Daily.Total.Rainfall")
+
+# Convert data to matrix format
+data_matrix <- as.matrix(final_averaged_clean[, features])
+labels <- final_averaged_clean$PM2.5
+
+n <- nrow(final_averaged_clean)
+
+fold_number = 1000
+# Create 10 folds
+folds <- createFolds(labels, k = fold_number, list = TRUE)
+
+# Store MSE for each fold
+mse <- numeric(fold_number)
+
+# 10-Fold Cross-Validation
+for (k in 1:fold_number) {
+  test_idx <- folds[[k]]  # Test indices for this fold
+  train_idx <- setdiff(1:n, test_idx)  # Remaining data for training
+  
+  train_matrix <- data_matrix[train_idx, , drop = FALSE]
+  test_matrix <- data_matrix[test_idx, , drop = FALSE]
+  
+  train_label <- labels[train_idx]
+  test_label <- labels[test_idx]
+  
+  
+  # Train the model
+  xgb_model <- xgboost(
+    data = train_matrix, 
+    label = train_label, 
+    nrounds = 100,
+    verbose = 0
+  )
+  
+  # Predict for the test set
+  predictions <- predict(xgb_model, test_matrix)
+  
+  # Compute Mean Squared Error (MSE) for this fold
+  mse[k] <- mean((predictions - test_label)^2)
+}
+
+# Compute the overall mean MSE across 10 folds
+cv_mse <- mean(mse)
+
+# Print final cross-validation MSE
+print(cv_mse)
+
+
+
+
+```
+
+
+
+
