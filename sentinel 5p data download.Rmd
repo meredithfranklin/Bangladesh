@@ -1,0 +1,450 @@
+---
+title: "Untitled"
+author: "Bowen Li"
+date: "2024-09-28"
+output: pdf_document
+---
+
+
+
+
+```{r}
+
+library(terra)
+library(sf)
+library(openeo)
+
+
+
+# Define AOI (investigation area) -> Load polygon (shape layer)
+#aoi_data <- raster::shapefile("bgd_adm_bbs_20201113_SHP/bgd_admbnda_adm0_bbs_20201113.shp")                 # adjust manually
+
+#plot(aoi_data)
+```
+
+
+```{r}
+# connect to the backend and authenticate
+  connection = connect(host = "https://openeo.dataspace.copernicus.eu")
+  login() #You need to sign up for this website.
+
+```
+
+```{r}
+# get the process collection to use the predefined processes of the back-end
+p = processes()
+
+# get the collection list to get easier access to the collection ids, via auto completion
+collections = list_collections()
+
+# get the formats
+formats = list_file_formats()
+
+formats
+
+# Find the Sentinel-5P collection ID
+# View the available collections to identify the correct ID
+View(collections)
+
+```
+
+```{r}
+# the collection ID is "SENTINEL_5P_L2" 
+collection_id <- "SENTINEL_5P_L2"
+
+# Describe the collection to get more information about available bands
+s5p_info <- describe_collection(collection_id)
+print(s5p_info)
+#print(s5p_info$`cube:dimensions`$bands$values)  # List available bands
+
+```
+
+```{r}
+# Define your area of interest (AOI)
+# Bounding box over Bangladesh
+spatial_extent <- list(
+  west = 88.0,
+  south = 20.6,
+  east = 92.7,
+  north = 26.6
+) # Just check if this range covers all of Bangladesh. The easiest way is to check the download map below, around line 156. There is a map displayed during the download process.
+ 
+
+# Define the temporal extent
+temporal_extent <- c("2022-01-01", "2023-01-01")  # Adjust dates as needed. This means downloading data from 2022-01-01 to 2022-12-31, excluding 2023-01-01.
+
+# Load the Sentinel-5P collection
+datacube <- p$load_collection(
+  id = collection_id,
+  spatial_extent = spatial_extent,
+  temporal_extent = temporal_extent,
+  bands = c("CH4"), # Replace with desired bands, e.g., "NO2", "CO", "O3". Only one file can be downloaded at a time!!!
+  properties = list(
+    "timeliness" = function(value) { value == "OFFL" }
+  )
+
+) 
+
+
+datacube
+
+```
+
+
+```{r}
+
+
+min_reducer = function(data,context) { 
+  return(p$mean(data = data))
+}
+
+reduced = p$reduce_dimension(data = datacube, reducer = min_reducer, dimension="t")
+
+
+```
+
+
+```{r}
+
+
+
+formats = list_file_formats()
+
+result = p$save_result(data = datacube, format ="netCDF")
+
+
+```
+
+
+```{r}
+
+
+# create a job at the back-end using our datacube, giving it the title `Example Title`
+
+job = create_job(graph=result,title = "CH4")
+
+```
+
+
+```{r}
+
+
+start_job(job = job)
+
+
+```
+
+  
+```{r}
+
+
+jobs = list_jobs()
+jobs # printed as a tibble or data.frame, but the object is a list
+
+
+# alternatively request detailed information about the job
+describe_job(job = job)
+
+
+```
+
+
+```{r}
+
+
+# list the processed results
+list_results(job = job)
+
+# download all the files into a folder on the file system
+download_results(job = job, folder = "5P_data_2/test")
+
+
+```
+
+
+```{r}
+#delete all jobs
+
+for (job_id in jobs) {
+    delete_job(job = job_id)
+}
+
+
+
+
+```
+
+
+
+```{r}
+
+# Specify the folder containing the raster files
+folder <- "5P_data_2/CO"
+
+# List all .tif files in the folder
+file_list <- list.files(folder, pattern = "\\.tif$", full.names = TRUE)
+
+#change the name
+
+for (file_path in file_list) {
+  # Generate the new filename by replacing "openEO" with "CO"
+  new_file_path <- gsub("openEO", "CO", file_path)
+  
+  # Rename the file on the file system
+  file.rename(file_path, new_file_path)
+}
+```
+
+
+```{r}
+# Specify the folders containing the raster files
+folder1 <- "CO/"
+folder2 <- "NO2/"
+
+# List all .tif files in each folder
+file_list1 <- list.files(folder1, pattern = "\\.tif$", full.names = TRUE)
+file_list2 <- list.files(folder2, pattern = "\\.tif$", full.names = TRUE)
+
+# Read and stack the .tif files from each folder separately
+raster_stack1 <- rast(file_list1)
+raster_stack2 <- rast(file_list2)
+
+
+combined_layers <- list()
+for (i in seq_len(nlyr(raster_stack1))) {
+  # Stack the corresponding layers together
+  combined_layer <- c(raster_stack1[[i]], raster_stack2[[i]])
+  
+  # Optionally, you can perform an operation on the layers, like averaging
+  # combined_layer <- mean(raster_stack1[[i]], raster_stack2[[i]])
+  
+  # Add the combined layer to the list
+  combined_layers[[i]] <- combined_layer
+}
+
+
+```
+
+
+
+
+
+
+
+
+
+```{r}
+for (i in 1:3) {
+  plot(combined_layers[[i]])
+}
+
+```
+
+```{r}
+plot(combined_layers[[1]]$`CO_2018-12-29Z`)
+plot(aoi_data, add=TRUE, border = "red", lwd = 2)
+```
+```{r}
+plot(raster_stack1$`CO_2018-12-30Z`)
+plot(aoi_data, add=TRUE, border = "red", lwd = 2)
+```
+
+
+```{r}
+# Load packages
+library(terra)
+library(sf)
+library(mapview)
+
+
+```
+
+
+
+
+```{r}
+
+aoi_data <- st_as_sf(aoi_data)
+
+# Get CRS of raster and AOI
+crs_raster <- crs(combined_layers[[i]])
+crs_aoi <- st_crs(aoi_data)
+
+# If they differ, transform the AOI to match the raster's CRS
+if (crs_raster != crs_aoi) {
+  aoi_data <- st_transform(aoi_data, crs = crs_raster)
+}
+
+
+```
+
+
+
+
+
+
+
+```{r}
+
+# Visualize raster and AOI
+mapview(combined_layers[[1]], layer.name = "CO  (mean from Dec-30 to 31, 2018 )") + mapview(aoi_data, color = "blue", lwd = 2,layer.name = "Bangladesh ")
+
+```
+
+
+```{r}
+
+library(sf)
+
+# Assuming 'aoi_sf' is your AOI sf object
+# Ensure CRS alignment
+if (crs(result_raster) != st_crs(aoi_data)) {
+  aoi_sf <- st_transform(aoi_data, crs(result_raster))
+}
+
+# Mask the raster with the AOI
+raster_masked <- mask(result_raster, vect(aoi_data))
+
+# Get the values within the AOI
+values_in_aoi <- values(raster_masked)
+
+# Remove NA values (cells outside the AOI)
+values_in_aoi <- values_in_aoi[!is.na(values_in_aoi)]
+
+# Display the first few values
+head(values_in_aoi)
+
+
+```
+
+
+
+```{r}
+# Convert the raster to a data frame with coordinates
+raster_df <- as.data.frame(result_raster, xy = TRUE, na.rm = FALSE)
+
+raster_df
+values(result_raster)
+
+```
+
+
+```{r}
+raster_masked_df <- as.data.frame(raster_masked, xy = TRUE, na.rm = FALSE)
+
+na.omit(raster_masked_df)
+values_in_aoi
+```
+
+
+
+```{r}
+library(ncdf4)
+
+# Open the file
+nc_file <- nc_open("test/openEO.nc")
+
+
+time <- ncvar_get(nc_file, "t")
+nc_file
+
+time
+```
+
+```{r}
+# Access a variable
+time <- ncvar_get(nc_file, "t")  # Time dimension (days since 1990-01-01)
+lat <- ncvar_get(nc_file, "y")  # Latitude
+lon <- ncvar_get(nc_file, "x")  # Longitude
+no2_data <- ncvar_get(nc_file, "NO2")  # NO2 data
+```
+
+
+```{r}
+dim(no2_data) 
+```
+
+```{r}
+no2_day1 <- no2_data[,,1]
+dim(no2_day1) 
+```
+
+```{r}
+# Open the first NetCDF file containing NO2 data
+nc_no2 <- nc_open("NO2/NO2.nc")
+lon <- ncvar_get(nc_no2, "x")
+lat <- ncvar_get(nc_no2, "y")
+time_no2 <- ncvar_get(nc_no2, "t")
+no2_data <- ncvar_get(nc_no2, "NO2")
+
+# Open the second NetCDF file containing CO data
+nc_co <- nc_open("CO/CO.nc")
+time_co <- ncvar_get(nc_co, "t")
+co_data <- ncvar_get(nc_co, "CO")
+
+# Close the original NetCDF files
+nc_close(nc_no2)
+nc_close(nc_co)
+
+dim(time_no2)
+dim(time_co)
+```
+
+```{r}
+
+
+# Align time dimensions: Find overlapping time periods
+common_times <- intersect(time_no2, time_co)
+if (length(common_times) == 0) {
+  stop("No overlapping time periods between NO2 and CO data!")
+}
+
+# Find indices of common times in the original time vectors
+no2_indices <- which(time_no2 %in% common_times)
+co_indices <- which(time_co %in% common_times)
+
+# Subset the NO2 and CO data to only include the overlapping times
+time_aligned <- common_times
+no2_data_aligned <- no2_data[,,no2_indices]
+co_data_aligned <- co_data[,,co_indices]
+
+# Define dimensions for the new file (latitude, longitude, and time)
+lon_dim <- ncdim_def("longitude", "degrees_east", lon)
+lat_dim <- ncdim_def("latitude", "degrees_north", lat)
+time_dim <- ncdim_def("t", "days since 1990-01-01", time_aligned)
+
+# Define the NO2 and CO variables for the new file
+no2_var <- ncvar_def("NO2", "parts_per_billion", list(lon_dim, lat_dim, time_dim), -999, prec = "float")
+co_var <- ncvar_def("CO", "parts_per_billion", list(lon_dim, lat_dim, time_dim), -999, prec = "float")
+
+# Create a new NetCDF file to store both NO2 and CO data
+nc_new <- nc_create("combined_no2_co.nc", list(no2_var, co_var))
+
+# Write NO2 and CO data to the new file
+ncvar_put(nc_new, no2_var, no2_data_aligned)
+ncvar_put(nc_new, co_var, co_data_aligned)
+
+# Close the new NetCDF file
+nc_close(nc_new)
+
+cat("Successfully combined NO2 and CO data into 'combined_no2_co.nc'.\n")
+
+```
+
+```{r}
+# Open the file
+combined <- nc_open("combined_no2_co.nc")
+
+# Print metadata
+print(combined)
+
+no2_data <- ncvar_get(combined, "NO2")  # NO2 data
+
+full_join
+
+```
+
+
+
+
+
