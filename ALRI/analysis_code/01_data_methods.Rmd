@@ -1,0 +1,793 @@
+---
+title: "01_data_methods"
+output: html_document
+knitr:
+  opts_chunk:
+    cache: false
+---
+
+```{r message=F, warning=F}
+library(lubridate)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(survival)
+library(gtsummary)
+library(gt)
+theme_set(theme_light())
+library(survminer)
+library(car)
+library(broom)
+library(GGally)
+library(tidyr)
+library(mgcv)
+library(slider)
+library(knitr)
+```
+
+```{r, warning=FALSE, read_data}
+# Select your data folder from OneDrive
+data_dir <- rstudioapi::selectDirectory(caption = "Select data folder")
+
+# ALRI data 
+alri_df <- read_csv(file.path(data_dir, "alri.csv"))
+
+# Demographics and SES
+demographics <- read_csv(file.path(data_dir, "alri823_1stnever.csv"))
+ses_df <- read_csv(file.path(data_dir, "SES.csv"))
+
+# PM25 data
+pm25_df <- read_csv(file.path(data_dir, "PM_20162018.csv"))
+prediction_pm25 <- read_csv(
+  file.path(data_dir, "full_participants_with_predictions.csv")
+)
+```
+
+Next, the start and stop times for each observation are constructed in the recurrent event dataset. For each child (C_ID), the data are first grouped and ordered by BAge. The variable tstop represents the child’s age at the end of the interval, while tstart corresponds to the beginning of that interval. The first interval for each child starts 7 days before the first recorded age, so that children who already had ALRI at study entry are also taken into account，and all subsequent intervals start at the previous record's BAge.
+
+```{r}
+# Construct recurrent ALRI risk intervals using child age as the time scale.
+# Risk intervals are defined between consecutive ALRI events within each child.
+
+alri_df <- alri_df %>% 
+  arrange(C_ID, RDate)
+
+alri_df <- alri_df %>% 
+  group_by(C_ID) %>% 
+  mutate(
+    tstop = BAge,
+    tstart = lag(BAge, default = first(BAge) - 7),
+    status = ALRI 
+    )%>%  
+  ungroup()
+
+alri_df %>% 
+  select(M_ID,C_ID, BAge, RDate, ALRI, Sev_ALRI, tstart,tstop, status)
+```
+
+```{r}
+# The following plot is used as a diagnostic check of the constructed risk interval start times. 
+#Distribution of first tstart(age at entry-7) into ALRI follow-up:
+
+tstart_df <- alri_df %>%
+  group_by(C_ID) %>%
+  summarise(tstart_age = min(tstart, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(tstart_df, aes(x = tstart_age)) +
+  geom_histogram(binwidth = 10, fill = "black", color = "white", alpha = 0.7) +
+  labs(
+    x = "Age at first tstart of each child (days)",
+    y = "Number of children",
+    title = "Distribution of first tstart into ALRI follow-up"
+  ) +
+  theme_minimal()
+
+# tstart_df %>%
+#   arrange(tstart_age) %>%
+#   slice_head(n = 30) %>%
+#   pull(tstart_age)
+
+```
+
+For each child, the first tstart value was defined as 7 days prior to the age at study entry. As a diagnostic check, the distribution of the first tstart across children was examined. The minimum observed tstart value was greater than 0, indicating that no follow-up intervals began prior to birth.
+
+## Merging demographics dataset
+
+The demographics dataset includes household-level characteristics, which are merged into the ALRI dataset by C_ID to include these covariates.
+
+```{r demographics}
+# Merge alri823 dataset(for demographics) into ALRI dataset
+demographics <- demographics %>% 
+  rename(C_ID = c_id,
+         M_ID = m_id)
+
+# Sanity check:
+# Check in the demographics dataset if each C_ID only appears in a single entry
+any(duplicated(demographics$C_ID))
+
+# Check ID and variable consistency before merging
+setdiff(alri_df$C_ID, demographics$C_ID)
+setdiff(demographics$C_ID, alri_df$C_ID)
+
+#Identify overlapping variable names
+intersect(names(alri_df), names(demographics))
+```
+
+The set of C_ID was identical across the two datasets, indicating that a one-to-one merge was appropriate.
+
+From the above output, the column names of C_ID, M_ID, cid, sex, BAge, Healthy, RDate and ALRI are the same, and all these variables in the demographic dataset except the C_ID(key) will be dropped to ensure consistency.
+
+```{r Merge demographics datset}
+# Drop overlapping variables from the demographics dataset to avoid duplication
+demographics_clean <- demographics %>%
+  select(-c(M_ID, cid, sex, BAge, Healthy, RDate, ALRI))
+
+# Merge demographics to the ALRI dataset 
+merged_df <- alri_df %>% 
+  left_join(demographics_clean, by = "C_ID")
+
+# Post-merged sanity check
+ncol(alri_df)
+ncol(demographics)
+ncol(demographics_clean)
+ncol(merged_df)
+
+nrow(alri_df); nrow(merged_df)
+
+length(unique(alri_df$C_ID))
+length(unique(merged_df$C_ID))
+
+# View(merged_df)
+```
+
+## Merge Satellite PM25 data
+
+```{r Satellite PM25 data}
+pm25_df <- pm25_df %>% 
+  rename(M_ID = mid)
+
+# View(pm25_df)
+
+# check if there are same columns for the pm dataset and the merged one
+intersect(names(merged_df), names(pm25_df))
+
+```
+
+Only variable "M_ID" appears in both dataframe, which is the key for the later merging. Therefore, no columns in PM25 dataset need to be dropped.
+
+Since the satellite Pm25 data is merged by year and month, year and month variables are created for the merged_df, and dataframe is merged by month, year, and mother ID. The resulting combined dataset is referred to as 'merged_env_df'.
+
+```{r Merge Satellite PM25}
+# Create" year" and "month" variable for the merged_df
+merged_df <- merged_df %>%
+  mutate(year = year(RDate),
+         month = month(RDate))
+
+# Merge
+merged_env_df <- merged_df %>%
+  left_join(pm25_df, by = c("M_ID", "year", "month"))
+
+# Post-merged Sanity check 
+nrow(merged_df)
+nrow(merged_env_df)
+ncol(merged_df)
+ncol(pm25_df)
+ncol(merged_env_df)
+```
+
+## Merge SES data
+
+The SES dataset contains household-level socioeconomic characteristics and is merged into the analysis dataset using mother ID (M_ID), with one record per M_ID. The final resulting combined dataset is referred to as 'final_df'.
+
+```{r}
+# Check if there are same columns for the ses dataset and the merged one
+intersect(names(merged_env_df), names(ses_df))
+
+# Check in the SES  dataset if each M_ID only appears in a single entry
+any(duplicated(ses_df$M_ID))
+```
+
+From the above output, the column names of M_ID, M_edu, M_Prof, zilla are the same. To avoid duplication, overlapping variables from the SES dataset were removed prior to merging, retaining M_ID as the merge key.
+
+```{r}
+# Drop duplicated columns
+ses_clean <- ses_df %>%
+  select(-c(M_edu, M_Prof, zilla))
+
+# Merge ses dataset to the current main dataset
+final_df <- merged_env_df %>% 
+  left_join(ses_clean, by = "M_ID")
+
+# Post-merge sanity check
+nrow(merged_env_df)
+nrow(final_df)
+
+```
+
+## Merge the PM25_prediction dataset
+
+Rolling average PM2.5 exposures were constructed using sliding windows of varying lengths (1 to 30 days) based on daily satellite-predicted PM2.5 values. For each window, averages were computed only when a complete exposure history was available for the full window length (e.g., 30 consecutive days for the 30-day window), ensuring that rolling exposure estimates were based on comparable information across observations. Multiple window lengths were considered to capture potential short-term and cumulative exposure effects.
+
+```{r}
+prediction_pm25 <- prediction_pm25 %>%
+  rename(M_ID = mid) %>%
+  arrange(M_ID, date) %>%
+  group_by(M_ID)
+
+# Construct the rolling windows
+
+prediction_pm25 <- prediction_pm25 %>%
+  mutate(
+    mean_pm25_predicted_30d = slide_dbl(predicted_PM25, mean, .before = 29, .complete = TRUE, na.rm = TRUE),
+    mean_pm25_predicted_14d = slide_dbl(predicted_PM25, mean, .before = 13, .complete = TRUE, na.rm = TRUE),
+    mean_pm25_predicted_7d  = slide_dbl(predicted_PM25, mean, .before = 6,  .complete = TRUE, na.rm = TRUE),
+    mean_pm25_predicted_6d  = slide_dbl(predicted_PM25, mean, .before = 5,  .complete = TRUE, na.rm = TRUE),
+    mean_pm25_predicted_5d  = slide_dbl(predicted_PM25, mean, .before = 4,  .complete = TRUE, na.rm = TRUE),
+    mean_pm25_predicted_4d  = slide_dbl(predicted_PM25, mean, .before = 3,  .complete = TRUE, na.rm = TRUE),
+    mean_pm25_predicted_3d  = slide_dbl(predicted_PM25, mean, .before = 2,  .complete = TRUE, na.rm = TRUE),
+    mean_pm25_predicted_2d  = slide_dbl(predicted_PM25, mean, .before = 1,  .complete = TRUE, na.rm = TRUE),
+    mean_pm25_predicted_1d  = slide_dbl(predicted_PM25, mean, .before = 0,  .complete = TRUE, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+```
+
+Rolling average PM2.5 exposures are missing for some observations due to incomplete exposure histories or lack of satellite prediction coverage for specific mother IDs or dates.
+
+```{r Merge PM25 Predictions}
+final_df <- final_df %>%
+  left_join(
+    prediction_pm25 %>%
+      select(M_ID, date, predicted_PM25, zilla, mean_pm25_predicted_14d, mean_pm25_predicted_7d, mean_pm25_predicted_30d, mean_pm25_predicted_6d, mean_pm25_predicted_5d, mean_pm25_predicted_4d, mean_pm25_predicted_3d, mean_pm25_predicted_2d, mean_pm25_predicted_1d),
+    by = c("M_ID" = "M_ID", "RDate" = "date")
+  )
+
+```
+
+## Handle Missing Sex Values
+
+Missing values for sex were filled within each child by propagating the available value across all observations sharing the same child ID (C_ID).
+
+```{r filling missed sex}
+final_df <- final_df %>%
+  group_by(C_ID) %>%
+  mutate(sex = first(na.omit(sex))) %>%
+  ungroup()
+```
+
+## Summary Statistics
+
+We construct baseline-level datasets for children and mothers by retaining only the first observation per C_ID and M_ID, respectively. The following summaries are provided to describe the composition of the analytic cohort and to verify that baseline variables were constructed as expected. In the final_df, 823 children are recorded, corresponding to 819 mothers.
+
+```{r}
+# Extract first line of each C_ID and M_ID
+baseline_df_child <- final_df %>% 
+  distinct(C_ID, .keep_all = TRUE)
+
+baseline_df_mom <- final_df %>% 
+  distinct(M_ID, .keep_all = TRUE)
+
+get_dist <- function(df, var){
+  df %>%
+    count({{var}}) %>%
+    mutate(percent = round(100 * n / sum(n), 1)) %>%
+    arrange(desc(n))
+}
+
+# Child
+cat("Child-level variables:\n")
+sex_table <- get_dist(baseline_df_child, sex)
+print(sex_table)
+
+# Mom
+cat("\nMom/household-level variables:\n")
+biomass_table <- get_dist(baseline_df_mom, biomass)
+ethnicity_table <- get_dist(baseline_df_mom, ethnicity)
+bmi_category_table <- get_dist(baseline_df_mom, bmicat)
+kitchen_location_table <- get_dist(baseline_df_mom, kchnloc1)
+kitchen_type_table <- get_dist(baseline_df_mom, kchnT)
+fuel_type_table <- get_dist(baseline_df_mom, fuelT)
+stove_type_table <- get_dist(baseline_df_mom, Tstv)
+mother_education_table <- get_dist(baseline_df_mom, medu)
+mother_profession_table <- get_dist(baseline_df_mom, mprof)
+religion_table <- get_dist(baseline_df_mom, religion1)
+location_table <- get_dist(baseline_df_mom, area)
+
+print(biomass_table)
+print(ethnicity_table)
+print(bmi_category_table)
+print(kitchen_location_table)
+print(kitchen_type_table )
+print(fuel_type_table)
+print(stove_type_table)
+print(mother_education_table )
+print(mother_profession_table)
+print(religion_table)
+print(location_table) 
+```
+
+### Summary statistics table
+
+```{r}
+pm25_by_area <- final_df %>%       
+  group_by(area) %>%
+  summarise(
+    pm25_mean = mean(predicted_PM25, na.rm = TRUE),
+    pm25_sd = sd(predicted_PM25, na.rm = TRUE)
+  ) %>%
+  mutate(area_pm25 = paste0(
+      area, 
+      " (PM2.5 [µg/m³]: ",
+      round(pm25_mean, 1), " (",
+      round(pm25_sd, 1), "))"
+    )
+  )
+baseline_df_mom <- baseline_df_mom %>%
+  left_join(pm25_by_area, by = "area")
+
+baseline_df_mom <- baseline_df_mom %>%
+  mutate(area_display = area_pm25)
+```
+
+```{r}
+# Recode variables for maternal characteristics
+
+## mprof variable = 0 is not housewife 
+baseline_df_mom <- baseline_df_mom %>% 
+  mutate(
+    mprof = dplyr::recode(as.character(mprof),
+                   "0" = "Not Housewife",
+                   "House wife" = "Is Housewife"))
+
+## toilet_S variable = 1 stands for there is toilet at home
+baseline_df_mom <- baseline_df_mom %>%
+  mutate(
+    toilet_S_recoded = dplyr::case_when(
+      toilet_S == "0" ~ "No toilet at home",
+      toilet_S == "1" ~ "Has toilet at home",
+      toilet_S == "." ~ "Missing values",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Recode variables for child characteristics
+
+## 1 is boy, 2 is girl 
+baseline_df_child <- baseline_df_child %>% 
+  mutate(
+    sex = dplyr :: recode(sex,
+                 "1" = "Boy",
+                 "2" = "Girl")
+  )
+
+# Recode tbc variable into clean variable 
+
+baseline_df_mom <- baseline_df_mom %>%
+  mutate(
+    tbc_char = as.character(tbc),
+    tbc_recoded = dplyr::case_when(
+      tbc_char == "0" ~ "No tobacco use",
+      tbc_char == "oral tobacco consumtion" ~ "Oral tobacco use",
+      TRUE ~ "Missing"
+    )
+  )
+
+# Recode child under 5 years old variable
+
+baseline_df_mom <- baseline_df_mom %>%
+  mutate(
+    ChldUn5_clean = as.character(ChldUn5),
+    ChldUn5_clean = ifelse(ChldUn5_clean == ".", NA, ChldUn5_clean),
+    ChldUn5_num = as.numeric(ChldUn5_clean),
+    any_child_under5 = ifelse(ChldUn5_num >= 1, "Yes", "No")
+  )
+
+
+# Construct full table 
+table1_child <- baseline_df_child %>%
+  select(sex, wtkg1) %>%
+  tbl_summary(
+    statistic = list(
+      wtkg1 ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    digits = list(
+      wtkg1 ~ 1,
+      all_categorical() ~ c(0,1)
+    ),
+    percent = "column",
+    missing = "no",
+    sort = all_categorical() ~ "frequency",
+    label = list(
+      sex ~ "Child Sex",
+      wtkg1 ~ "Child Weight (kg), Mean (SD)"
+    )
+  )
+
+table1_mom<- baseline_df_mom %>%
+  select(m_age, 
+         #bmi,
+         #m_weight, 
+         m_height,
+         biomass,
+         #ethnicity, 
+         #bmicat, 
+         area_display,
+         #religion1, 
+         #mprof, 
+         kchnloc1, 
+         #kchnT, 
+         #fuelT, 
+         #Tstv, 
+         #medu, 
+         toilet_S_recoded,
+         tbc_recoded,
+         sga,
+         any_child_under5,
+         ga,
+         lqdbfrm
+         ) %>%
+  tbl_summary(
+        type = list(
+      tbc_recoded ~ "dichotomous",
+      any_child_under5 ~ "dichotomous"
+    ),
+    value = list(
+      tbc_recoded ~ "Oral tobacco use",
+      any_child_under5 ~ "Yes"
+    ),
+    
+    statistic = list(
+    m_age ~ "{mean} ({sd})",
+    #bmi ~ "{mean} ({sd})",
+    #m_weight ~ "{mean} ({sd})",
+    m_height ~ "{mean} ({sd})",
+    ga ~ "{mean} ({sd})",
+    tbc_recoded ~ "{n} ({p}%)",
+    all_categorical() ~ "{n} ({p}%)"
+  ),
+  digits = list(
+    m_age ~ 1,
+    #bmi ~ 1,
+    #m_weight ~ 1,
+    m_height ~ 1,
+    ga ~ 1,
+    all_categorical() ~ c(0,1)
+  ), 
+           percent = "column", 
+              missing = "no",
+              sort = all_categorical() ~ "frequency",
+              label = list(
+                m_age ~ "Maternal Age Mean(SD), years",
+                # bmi ~ "Maternal BMI Mean(SD)",
+                # m_weight ~ "Maternal Weight Mean(SD),kg",
+                m_height ~ "Maternal Height Mean(SD),cm",
+                biomass ~ "Biomass Fuel Use",
+                # ethnicity ~ "Ethnic Group",
+                # bmicat ~ "BMI Category",
+                area_display~ "Location of Household",
+                # religion1 ~ "Religion",
+                # mprof ~ "Housewife",
+                kchnloc1 ~ "Kitchen Location",
+                # kchnT ~ "Kitchen Type",
+                # fuelT ~ "Fuel Type",
+                # Tstv ~ "Stove Type",
+                # medu ~ "Maternal Years of Education",
+                toilet_S_recoded ~"Existence of Toilet",
+                tbc_recoded ~ "Tobacco Consmuption",
+                sga ~ "Small for gestational age",
+                any_child_under5 ~ "Any child under 5 years old at home", 
+                # ga ~ "Gestational age",
+                lqdbfrm ~ "Baby given any other liquids before breast milk"
+              )) 
+
+# Merge
+final_table1 <- tbl_stack(list(table1_child, table1_mom),  
+  group_header = c("Child Characteristics", "Maternal Characteristics"))%>% 
+  modify_caption("**table1.Baseline Characteristics**") %>% 
+  modify_footnote(
+    all_stat_cols() ~ "Child-level N = 823; Maternal-level N = 819"
+  )
+
+final_table1 <- as_gt(final_table1) 
+
+final_table1 <-gt::tab_style(
+  data = final_table1,
+    style = gt::cell_text(weight = "bold"),
+    locations = gt::cells_row_groups()
+  )
+
+final_table1
+
+final_df %>% 
+  count(ga)
+```
+
+```{r}
+# Save summary table
+gtsave(final_table1, "summary_table.png")
+
+# Save final_df 
+# write.csv(final_df, "final_merged_df.csv", row.names = FALSE)
+```
+
+```{r}
+#latex_tab <- final_table1 %>%
+#  gtsummary::as_kable(format = "latex")
+
+#cat(latex_tab)
+```
+
+## EDA
+
+### Descriptive summary
+
+```{r}
+# Check how many children are with ALRI = 1 when enter the study
+alri_df %>% 
+  arrange(C_ID, RDate) %>%
+  group_by(C_ID) %>% 
+  slice_head(n = 1) %>% 
+  summarise(first_ALRI = first(ALRI)) %>%
+  ungroup() %>% 
+  summarise(num_first1 = sum(first_ALRI == 1 ))
+```
+
+To identify children who experienced ALRI at study entry, the first recorded observation for each child were examined. A total of 28 children had ALRI = 1 at entry.
+
+```{r}
+#  alri_df %>%
+#    arrange(C_ID, RDate) %>%
+#    group_by(C_ID) %>%
+#    slice_head(n = 1) %>%
+#    filter(ALRI == 1) %>%
+#    pull(C_ID)
+```
+
+```{r}
+# Count how many times ALRI = 1 was recorded for each child 
+child_preliminary_count <- final_df %>% 
+  group_by(C_ID) %>% 
+  summarise(n_count = sum(ALRI))
+
+preliminary_count_summary <-child_preliminary_count %>% 
+  group_by(n_count) %>% 
+  summarise(n_children =n())
+  
+preliminary_count_summary
+
+# Identify the children with exactly three ALRI = 1 records
+# child_preliminary_count%>%
+#  filter(n_count == 3) %>%
+#  pull(C_ID)
+
+# Identify the children with exactly four ALRI = 1 records
+# child_preliminary_count %>%
+#  filter(n_count == 4) %>%
+#  pull(C_ID)
+```
+
+649 children never have ALRI in the followup period, 137 children have exactly one ALRI = 1 record, 30 have exactly 2 ALRI = 1 record, 6 have exactly 3 ALRI = 1 record, and 1 has 4 ALRI = 1 record.
+
+Distribution of final follow-up age per child
+
+```{r}
+followup_df <- final_df %>%
+  group_by(C_ID) %>%
+  summarise(last_followup = max(tstop, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(followup_df, aes(x = last_followup)) +
+  geom_histogram(binwidth = 10, fill = "skyblue", color = "white", alpha = 0.7) +
+  labs(
+    x = "Last follow-up age (days)",
+    y = "Number of children",
+    title = "Distribution of final follow-up age per child"
+  ) +
+  theme_minimal()
+
+min(followup_df$last_followup)
+max(followup_df$last_followup)
+# followup_df
+```
+
+Distribution of follow-up duration for each child
+
+```{r}
+followup_df <- final_df %>%
+  group_by(C_ID) %>%
+  summarise(
+    first_tstart = min(tstart, na.rm = TRUE),
+    last_tstop  = max(tstop, na.rm = TRUE),
+    followup_duration = last_tstop - first_tstart
+  ) %>%
+  ungroup()
+
+followup_df %>% 
+  ggplot(aes(x= followup_duration)) +
+  geom_histogram(binwidth = 10,fill = "purple", color = "white", alpha = 0.7) +
+  labs(x = "Follow-up duration (days)", y = "Number of children",
+       title = "Distribution of follow-up duration per child")
+
+min(followup_df$followup_duration)
+max(followup_df$followup_duration)
+```
+
+The minimum follow-up duration was 168 days, and the maximum follow-up duration was 518 days.
+
+```{r}
+# Construct season variable for the df 
+final_df <- final_df %>%
+  mutate(
+    season = case_when(
+      month %in% c(12, 1, 2)  ~ "Winter",
+      month %in% c(3, 4, 5)   ~ "Spring",
+      month %in% c(6, 7, 8)   ~ "Summer",
+      month %in% c(9, 10, 11) ~ "Fall"
+    ),
+    season = factor(season, levels = c("Winter", "Spring", "Summer", "Fall"))
+  )
+```
+
+```{r}
+# Exploratory distributions of baseline maternal covariates
+
+# Maternal age 
+ggplot(baseline_df_mom, aes(x = m_age)) +
+  geom_histogram(binwidth = 2, fill = "skyblue", color = "black") +
+  labs(title = "Distribution of Maternal Age", x = "Age (years)", y = "Count")
+
+# Maternal BMI 
+ggplot(baseline_df_mom, aes(y = bmi)) +
+  geom_boxplot(fill = "skyblue") +
+  labs(title = "Distribution of Maternal BMI", y = "BMI")
+
+ggplot(baseline_df_mom, aes(x = bmi)) +
+  geom_histogram(fill = "skyblue", color = "black") +
+  labs(title = "Distribution of Maternal BMI", x = "BMI", y = "Count")
+
+# Maternal heights 
+ggplot(baseline_df_mom, aes(x = m_height)) +
+  geom_histogram(fill = "skyblue", color = "black") +
+  labs(title = "Distribution of Maternal Height", x = "Height(cm)", y = "Count")
+```
+
+```{r}
+# Child sex
+ggplot(baseline_df_child, aes(x = sex)) +
+  geom_bar(fill = "skyblue") +
+  labs(title = "Sex Distribution", x = "Sex", y = "Count")
+```
+
+Check how many NAs in each column： The table below summarizes the extent of missingness across variables in the analytic dataset
+
+```{r}
+final_df %>%
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  pivot_longer(cols = everything(),
+               names_to = "column",
+               values_to = "na_count") %>%
+  mutate(na_percent = round(na_count / nrow(final_df) * 100, 2))
+
+```
+
+### KM Plot
+
+Since the Kaplan–Meier plot does not accommodate the recurrent event format, the counting-process data structure was compressed so that each child (C_ID) has only one entry. Children who never experienced ALRI during the follow-up were treated as censored, while for those who had at least one episode, the follow-up time (tstop) was set to the time of their first ALRI occurrence. All demographic and baseline covariates were kept unchanged. However, under this setup, time-varying covariates for each child cannot be taken into account.
+
+At any given time, the risk set consists of all children who have already entered the study (t ≥ tstart) and have not yet experienced ALRI or been censored (t \< tstop).
+
+```{r}
+# Create the first event data frame 
+first_event_df <- final_df %>%
+  arrange(C_ID, tstop) %>%                  
+  group_by(C_ID) %>%
+  mutate(entry_tstart = first(tstart)) %>%  # record tstart
+  filter(
+    if (any(status == 1)) tstop == min(tstop[status == 1])  
+    else row_number() == n()                                
+  ) %>%
+  mutate(tstart = entry_tstart) %>%       
+  select(-entry_tstart) %>%                 
+  ungroup()
+```
+
+```{r}
+# Sanity check
+table(first_event_df$status)
+any(is.na(first_event_df$status))
+```
+
+KM plot using the first event dataframe
+
+```{r}
+km_fit <- survfit(Surv(tstart, tstop, status) ~ 1, data = first_event_df)
+
+ggsurvplot(
+  km_fit,
+  conf.int = TRUE,
+  xlab = "Age in days (BAge)",
+  ylab = "Probability of remaining ALRI-free",
+  palette = "jama",
+  ylim = c(0.6, 1)
+)
+```
+
+```{r}
+summary(km_fit)
+```
+
+```{r}
+km_summary <- summary(km_fit)
+data.frame(
+  time = km_summary$time,
+  surv = km_summary$surv,
+  n_risk = km_summary$n.risk,
+  n_event = km_summary$n.event
+)
+```
+
+By age 405 days, approximately 70.6% of infants remained ALRI-free.
+
+```{r}
+# KM plot by sex 
+first_event_df <- first_event_df %>%
+  mutate(
+    sex = factor(
+      sex,
+      levels = c(1, 2),
+      labels = c("Male", "Female")
+    )
+  )
+
+km_fit_sex <- survfit(Surv(tstart, tstop, status) ~ sex, data = first_event_df)
+
+km_plot_sex <- ggsurvplot(
+  km_fit_sex,
+  legend.title = "Sex",
+  xlab = "Age in days (BAge)",
+  ylab = "Probability of remaining ALRI-free",
+  palette = "jco",
+  ylim = c(0.6, 1)
+)
+
+print(km_plot_sex$plot)
+```
+
+### Distribution of Inter-event Times Between ALRI Events
+
+```{r}
+# construct interval df for the children that experience at least two times of ALRI
+intervals_event <- final_df %>%
+arrange(C_ID, tstop) %>%
+group_by(C_ID) %>%
+select(C_ID, tstart, tstop, status) %>%
+filter(status == 1) %>%
+mutate(interval = tstop - lag(tstop)) %>%
+filter(!is.na(interval)) %>%
+ungroup()
+
+# sanity check
+summary(intervals_event$interval)
+sum(intervals_event$interval < 0, na.rm = TRUE)
+sum(intervals_event$interval == 0, na.rm = TRUE)
+ggplot(intervals_event, aes(x = interval)) +
+geom_histogram(binwidth = 7, fill = "black", color = "white") +
+geom_vline(xintercept = median(intervals_event$interval, na.rm = TRUE),
+linetype = "dashed", color = "#2E4057") +
+labs(x = "Interval between ALRI events (days)", y = "Count",
+title = "Distribution of event-to-event intervals") +
+theme_minimal()
+```
+
+```{r save_objects, include=FALSE}
+analysis_objects <- list(
+  final_df = final_df,
+  first_event_df = first_event_df,
+  baseline_df_child = baseline_df_child,
+  baseline_df_mom = baseline_df_mom
+)
+
+saveRDS(analysis_objects, "analysis_objects.rds")
+```
