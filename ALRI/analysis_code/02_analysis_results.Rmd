@@ -1141,8 +1141,6 @@ pm25_forest_plot <- ggplot(pm_results, aes(x = Window, y = HR, color = Variable)
 
 ```
 
-
-
 ```{r}
 print(pm25_forest_plot)
 ggsave(
@@ -1152,25 +1150,3 @@ height = 8,
 dpi = 300
 )
 ```
-```{r}
-# Results checking part for paper
-demographics %>% 
-  count(M_ID) %>% 
-  filter(n == 2)
-
-final_df %>% 
-  dplyr::summarise(
-    total_episodes = sum(status == 1, na.rm = TRUE)
-  )
-
-ggplot(final_df, aes(x = mean_pm25_predicted_7d)) +
-  geom_histogram(binwidth = 10, fill = "black", color = "white", alpha = 0.7) +
-  labs(
-    x = "",
-    y = "",
-
-  ) +
-  theme_minimal()
-```
-
-
