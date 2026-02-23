@@ -1,0 +1,941 @@
+---
+title: "ERA5 data"
+output: html_document
+date: "2025-05-09"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+library(reticulate)
+library(ggplot2)
+library(gt)
+library(mgcv)
+library(dtplyr)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(broom)
+library(tidytext)
+library(wordcloud2)
+library(tm)
+library(reshape2)
+library(tidyverse)
+library(topicmodels)
+library(raster)
+library(leaflet)
+library(sf)
+```
+
+## This is the most up-to-date version (As of July 31st)
+
+```{r}
+library(ncdf4)
+data_2017_01_02_inst <- nc_open("era5_data/2017_01_02_Type-instant.nc")
+data_2017_01_02_accum <- nc_open("era5_data/2017_01_02_Type-accum.nc")
+data_2017_03_04_inst <- nc_open("era5_data/2017_03_04_Type-instant.nc")
+data_2017_03_04_accum <- nc_open("era5_data/2017_03_04_Type-accum.nc")
+data_2017_05_06_inst <- nc_open("era5_data/2017_05_06_Type-instant.nc")
+data_2017_05_06_accum <- nc_open("era5_data/2017_05_06_Type-accum.nc")
+data_2017_07_08_inst <- nc_open("era5_data/2017_07_08_Type-instant.nc")
+data_2017_07_08_accum <- nc_open("era5_data/2017_07_08_Type-accum.nc")
+data_2017_09_10_inst <- nc_open("era5_data/2017_09_10_Type-instant.nc")
+data_2017_09_10_accum <- nc_open("era5_data/2017_09_10_Type-accum.nc")
+data_2017_11_12_inst <- nc_open("era5_data/2017_11_12_Type-instant.nc")
+data_2017_11_12_accum <- nc_open("era5_data/2017_11_12_Type-accum.nc")
+```
+
+```{r}
+data_2018_01_02_inst <- nc_open("era5_data/2018_01_02_Type-instant.nc")
+data_2018_01_02_accum <- nc_open("era5_data/2018_01_02_Type-accum.nc")
+data_2018_03_04_inst <- nc_open("era5_data/2018_03_04_Type-instant.nc")
+data_2018_03_04_accum <- nc_open("era5_data/2018_03_04_Type-accum.nc")
+data_2018_05_06_inst <- nc_open("era5_data/2018_05_06_Type-instant.nc")
+data_2018_05_06_accum <- nc_open("era5_data/2018_05_06_Type-accum.nc")
+data_2018_07_08_inst <- nc_open("era5_data/2018_07_08_Type-instant.nc")
+data_2018_07_08_accum <- nc_open("era5_data/2018_07_08_Type-accum.nc")
+data_2018_09_10_inst <- nc_open("era5_data/2018_09_10_Type-instant.nc")
+data_2018_09_10_accum <- nc_open("era5_data/2018_09_10_Type-accum.nc")
+data_2018_11_12_inst <- nc_open("era5_data/2018_11_12_Type-instant.nc")
+data_2018_11_12_accum <- nc_open("era5_data/2018_11_12_Type-accum.nc")
+```
+
+```{r}
+data_2019_01_02_inst <- nc_open("era5_data/2019_01_02_Type-instant.nc")
+data_2019_01_02_accum <- nc_open("era5_data/2019_01_02_Type-accum.nc")
+data_2019_03_04_inst <- nc_open("era5_data/2019_03_04_Type-instant.nc")
+data_2019_03_04_accum <- nc_open("era5_data/2019_03_04_Type-accum.nc")
+data_2019_05_06_inst <- nc_open("era5_data/2019_05_06_Type-instant.nc")
+data_2019_05_06_accum <- nc_open("era5_data/2019_05_06_Type-accum.nc")
+data_2019_07_08_inst <- nc_open("era5_data/2019_07_08_Type-instant.nc")
+data_2019_07_08_accum <- nc_open("era5_data/2019_07_08_Type-accum.nc")
+data_2019_09_10_inst <- nc_open("era5_data/2019_09_10_Type-instant.nc")
+data_2019_09_10_accum <- nc_open("era5_data/2019_09_10_Type-accum.nc")
+data_2019_11_12_inst <- nc_open("era5_data/2019_11_12_Type-instant.nc")
+data_2019_11_12_accum <- nc_open("era5_data/2019_11_12_Type-accum.nc")
+```
+
+```{r}
+data_2020_01_02_inst <- nc_open("era5_data/2020_01_02_Type-instant.nc")
+data_2020_01_02_accum <- nc_open("era5_data/2020_01_02_Type-accum.nc")
+data_2020_03_04_inst <- nc_open("era5_data/2020_03_04_Type-instant.nc")
+data_2020_03_04_accum <- nc_open("era5_data/2020_03_04_Type-accum.nc")
+data_2020_05_06_inst <- nc_open("era5_data/2020_05_06_Type-instant.nc")
+data_2020_05_06_accum <- nc_open("era5_data/2020_05_06_Type-accum.nc")
+data_2020_07_08_inst <- nc_open("era5_data/2020_07_08_Type-instant.nc")
+data_2020_07_08_accum <- nc_open("era5_data/2020_07_08_Type-accum.nc")
+data_2020_09_10_inst <- nc_open("era5_data/2020_09_10_Type-instant.nc")
+data_2020_09_10_accum <- nc_open("era5_data/2020_09_10_Type-accum.nc")
+data_2020_11_12_inst <- nc_open("era5_data/2020_11_12_Type-instant.nc")
+data_2020_11_12_accum <- nc_open("era5_data/2020_11_12_Type-accum.nc")
+```
+
+```{r}
+data_2021_01_02_inst <- nc_open("era5_data/2021_01_02_Type-instant.nc")
+data_2021_01_02_accum <- nc_open("era5_data/2021_01_02_Type-accum.nc")
+data_2021_03_04_inst <- nc_open("era5_data/2021_03_04_Type-instant.nc")
+data_2021_03_04_accum <- nc_open("era5_data/2021_03_04_Type-accum.nc")
+data_2021_05_06_inst <- nc_open("era5_data/2021_05_06_Type-instant.nc")
+data_2021_05_06_accum <- nc_open("era5_data/2021_05_06_Type-accum.nc")
+data_2021_07_08_inst <- nc_open("era5_data/2021_07_08_Type-instant.nc")
+data_2021_07_08_accum <- nc_open("era5_data/2021_07_08_Type-accum.nc")
+data_2021_09_10_inst <- nc_open("era5_data/2021_09_10_Type-instant.nc")
+data_2021_09_10_accum <- nc_open("era5_data/2021_09_10_Type-accum.nc")
+data_2021_11_12_inst <- nc_open("era5_data/2021_11_12_Type-instant.nc")
+data_2021_11_12_accum <- nc_open("era5_data/2021_11_12_Type-accum.nc")
+```
+
+```{r}
+data_2022_01_02_inst <- nc_open("era5_data/2022_01_02_Type-instant.nc")
+data_2022_01_02_accum <- nc_open("era5_data/2022_01_02_Type-accum.nc")
+data_2022_03_04_inst <- nc_open("era5_data/2022_03_04_Type-instant.nc")
+data_2022_03_04_accum <- nc_open("era5_data/2022_03_04_Type-accum.nc")
+data_2022_05_06_inst <- nc_open("era5_data/2022_05_06_Type-instant.nc")
+data_2022_05_06_accum <- nc_open("era5_data/2022_05_06_Type-accum.nc")
+data_2022_07_08_inst <- nc_open("era5_data/2022_07_08_Type-instant.nc")
+data_2022_07_08_accum <- nc_open("era5_data/2022_07_08_Type-accum.nc")
+data_2022_09_10_inst <- nc_open("era5_data/2022_09_10_Type-instant.nc")
+data_2022_09_10_accum <- nc_open("era5_data/2022_09_10_Type-accum.nc")
+data_2022_11_12_inst <- nc_open("era5_data/2022_11_12_Type-instant.nc")
+data_2022_11_12_accum <- nc_open("era5_data/2022_11_12_Type-accum.nc")
+```
+
+```{r}
+time <- data_2017_01_02_inst$dim$valid_time$vals
+lat  <- data_2017_01_02_inst$dim$latitude$vals
+lon  <- data_2017_01_02_inst$dim$longitude$vals
+```
+
+```{r}
+extract_vars <- function(nc) {
+  var_names <- names(nc$var)
+  out <- list()
+  for (v in var_names) {
+    out[[v]] <- ncvar_get(nc, v)
+  }
+  return(out)
+}
+
+inst_vars  <- extract_vars(data_2017_03_04_inst)
+accum_vars <- extract_vars(data_2017_03_04_accum)
+
+accum_vars$number <- NULL
+accum_vars$expver <- NULL
+```
+
+```{r}
+merged_vars <- c(inst_vars, accum_vars)
+
+merged_vars$time <- time
+merged_vars$latitude <- lat
+merged_vars$longitude <- lon
+```
+
+
+```{r, eval = FALSE}
+# 1. Extract coordinate vectors
+lon <- merged_vars$longitude
+lat <- merged_vars$latitude
+time <- merged_vars$time
+
+# 2. Define NetCDF dimensions
+lon_dim <- ncdim_def("longitude", "degrees_east", lon)
+lat_dim <- ncdim_def("latitude", "degrees_north", lat)
+time_dim <- ncdim_def("time", "seconds since 1970-01-01 00:00:00", time, unlim = TRUE)
+
+dims <- list(lon_dim, lat_dim, time_dim)
+
+# 3. Identify valid 3D variables to write (exclude coord vars & non-3D)
+vars_to_write <- Filter(function(vname) {
+  v <- merged_vars[[vname]]
+  is.numeric(v) &&
+    length(dim(v)) == 3 &&
+    all(dim(v) == c(length(lon), length(lat), length(time)))
+}, setdiff(names(merged_vars), c("longitude", "latitude", "time")))
+
+# 4. Define NetCDF variable definitions
+var_defs <- lapply(vars_to_write, function(vname) {
+  ncvar_def(
+    name = vname,
+    units = "",              # Optional: fill in units if you have them
+    dim = dims,
+    missval = NA,
+    prec = "float"
+  )
+})
+
+# 5. Create NetCDF file
+out_file <- "era5_data/era5_2017_01_02_merged.nc"
+nc_new <- nc_create(out_file, var_defs)
+
+# 6. Write each 3D variable
+for (vname in vars_to_write) {
+  cat("Writing variable:", vname, "\n")
+  ncvar_put(nc_new, vname, merged_vars[[vname]])
+}
+
+# 7. Write coordinate variables
+ncvar_put(nc_new, "longitude", lon)
+ncvar_put(nc_new, "latitude",  lat)
+ncvar_put(nc_new, "time",      time)
+
+# 8. Close the file
+nc_close(nc_new)
+
+cat("✅ NetCDF file written to:", out_file, "\n")
+```
+
+```{r, eval = FALSE}
+names(data_2017_01_02_inst$var)
+data_2017_01_02 <- nc_open("era5_data/era5_2017_01_02_merged.nc")
+names(data_2017_01_02$var)
+names(data_2017_01_02$dim)
+```
+
+```{r}
+library(ncdf4)
+library(abind)   # install.packages("abind")  – used for step-2 / step-3 stacking
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 1 ─ Helper: merge one instant/accum pair into an in-memory list  ──────────────
+# ────────────────────────────────────────────────────────────────────────────────
+merge_pair <- function(nc_inst, nc_accum,
+                       drop_vars = c("number", "expver")) {
+
+  # ----- 1. sanity-check that grids match -----
+  same_len <- function(d) nc_inst$dim[[d]]$len == nc_accum$dim[[d]]$len
+  for (d in c("longitude", "latitude"))
+    if (!same_len(d)) stop("Lon/Lat grids differ between the two files!")
+
+  # time dimension can have different lengths (Jan-Feb vs Mar-Apr), so we just
+  # keep them separate for now; we’ll concatenate later.
+  # Get dimension names robustly (ERA5 sometimes uses 'time', sometimes
+  # 'valid_time'); we pick the first that contains 'time'.
+  time_dim_name <- names(nc_inst$dim)[grepl("time", names(nc_inst$dim), ignore.case = TRUE)][1]
+  if (is.na(time_dim_name)) stop("Time dimension not found!")
+
+  # coordinate vectors (they are 1-D)
+  coords <- list(
+    longitude = nc_inst$dim$longitude$vals,
+    latitude  = nc_inst$dim$latitude$vals,
+    time      = nc_inst$dim[[time_dim_name]]$vals
+  )
+
+  # ----- 2. helper to pull *all* variables as arrays -----
+  extract_vars <- function(nc) {
+    out <- lapply(names(nc$var), function(v) ncvar_get(nc, v))
+    names(out) <- names(nc$var)
+    out
+  }
+
+  inst_vars  <- extract_vars(nc_inst)
+  accum_vars <- extract_vars(nc_accum)
+
+  # ----- 3. drop unwanted 1-D admin vars (‘number’, ‘expver’, etc.) -----
+  inst_vars  <- inst_vars [ !(names(inst_vars)  %in% drop_vars) ]
+  accum_vars <- accum_vars[ !(names(accum_vars) %in% drop_vars) ]
+
+  # ----- 4. merge the two lists (instant variables win on name collision) -----
+  merged <- c(inst_vars, accum_vars[ setdiff(names(accum_vars), names(inst_vars)) ])
+
+  # ----- 5. keep **only** numeric 3-D arrays that match lon×lat×time -----
+  target_dim <- c(length(coords$longitude),
+                  length(coords$latitude),
+                  length(coords$time))
+
+  keep3d <- function(x)  is.numeric(x) &&
+                         length(dim(x)) == 3 &&
+                         all(dim(x) == target_dim)
+
+  merged <- merged[ vapply(merged, keep3d, logical(1)) ]
+
+  # ----- 6. append coordinates and return -----
+  merged$longitude <- coords$longitude
+  merged$latitude  <- coords$latitude
+  merged$time      <- coords$time
+  return(merged)
+}
+
+# ────────────────────────────────────────────────────────────────────────────────
+# EXAMPLE STEP-1 —> merge one pair (Jan-Feb 2017)   ─────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────
+# jan_feb17 <- merge_pair(data_2017_01_02_inst, data_2017_01_02_accum)
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 2 ─ Helper: stack six 2-month objects into one full-year object  ──────────────
+# ────────────────────────────────────────────────────────────────────────────────
+stack_year <- function(list_of_pairs) {
+  # All lists must have identical variable names & lon/lat vectors.
+  vnames <- setdiff(names(list_of_pairs[[1]]), c("longitude", "latitude", "time"))
+  out <- list()
+
+  # copy lon/lat once
+  out$longitude <- list_of_pairs[[1]]$longitude
+  out$latitude  <- list_of_pairs[[1]]$latitude
+
+  # concatenate time *and* each variable along the 3rd dimension
+  out$time <- do.call(c, lapply(list_of_pairs, `[[`, "time"))
+
+  for (v in vnames) {
+    out[[v]] <- abind::abind(lapply(list_of_pairs, `[[`, v),
+                             along = 3)        # concat in time dim
+  }
+  out
+}
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 3 ─ Helper: stack yearly objects into one multi-year object  ──────────────────
+# ────────────────────────────────────────────────────────────────────────────────
+stack_all_years <- function(list_of_years) {
+  vnames <- setdiff(names(list_of_years[[1]]), c("longitude", "latitude", "time"))
+  out <- list()
+  out$longitude <- list_of_years[[1]]$longitude
+  out$latitude  <- list_of_years[[1]]$latitude
+  out$time      <- do.call(c, lapply(list_of_years, `[[`, "time"))
+  for (v in vnames) {
+    out[[v]] <- abind::abind(lapply(list_of_years, `[[`, v),
+                             along = 3)
+  }
+  out
+}
+```
+
+```{r}
+# ────────────────────────────────────────────────────────────────────────────────
+# HOW TO USE EVERYTHING TO BUILD THE FINAL DATASET  ─────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────
+# 1. merge each instant/accum pair
+# jan_feb17 <- merge_pair(data_2017_01_02_inst, data_2017_01_02_accum)
+# mar_apr17 <- merge_pair(data_2017_03_04_inst, data_2017_03_04_accum)
+# … repeat for the other four pairs in 2017 …
+
+jan_feb17 <- merge_pair(data_2017_01_02_inst, data_2017_01_02_accum)
+mar_apr17 <- merge_pair(data_2017_03_04_inst, data_2017_03_04_accum)
+may_jun17 <- merge_pair(data_2017_05_06_inst, data_2017_05_06_accum)
+jul_aug17 <- merge_pair(data_2017_07_08_inst, data_2017_07_08_accum)
+sep_oct17 <- merge_pair(data_2017_09_10_inst, data_2017_09_10_accum)
+nov_dec17 <- merge_pair(data_2017_11_12_inst, data_2017_11_12_accum)
+
+# 2. build full-year list for 2017
+year2017 <- stack_year(list(jan_feb17, mar_apr17, may_jun17,
+                             jul_aug17, sep_oct17, nov_dec17))
+```
+
+```{r}
+#2018
+jan_feb18 <- merge_pair(data_2018_01_02_inst, data_2018_01_02_accum)
+mar_apr18 <- merge_pair(data_2018_03_04_inst, data_2018_03_04_accum)
+may_jun18 <- merge_pair(data_2018_05_06_inst, data_2018_05_06_accum)
+jul_aug18 <- merge_pair(data_2018_07_08_inst, data_2018_07_08_accum)
+sep_oct18 <- merge_pair(data_2018_09_10_inst, data_2018_09_10_accum)
+nov_dec18 <- merge_pair(data_2018_11_12_inst, data_2018_11_12_accum)
+
+year2018 <- stack_year(list(jan_feb18, mar_apr18, may_jun18,
+                             jul_aug18, sep_oct18, nov_dec18))
+
+```
+
+```{r}
+#2019
+jan_feb19 <- merge_pair(data_2019_01_02_inst, data_2019_01_02_accum)
+mar_apr19 <- merge_pair(data_2019_03_04_inst, data_2019_03_04_accum)
+may_jun19 <- merge_pair(data_2019_05_06_inst, data_2019_05_06_accum)
+jul_aug19 <- merge_pair(data_2019_07_08_inst, data_2019_07_08_accum)
+sep_oct19 <- merge_pair(data_2019_09_10_inst, data_2019_09_10_accum)
+nov_dec19 <- merge_pair(data_2019_11_12_inst, data_2019_11_12_accum)
+
+# 2. build full-year list for 2017
+year2019 <- stack_year(list(jan_feb19, mar_apr19, may_jun19,
+                             jul_aug19, sep_oct19, nov_dec19))
+```
+
+```{r}
+# 2020
+jan_feb20 <- merge_pair(data_2020_01_02_inst, data_2020_01_02_accum)
+mar_apr20 <- merge_pair(data_2020_03_04_inst, data_2020_03_04_accum)
+may_jun20 <- merge_pair(data_2020_05_06_inst, data_2020_05_06_accum)
+jul_aug20 <- merge_pair(data_2020_07_08_inst, data_2020_07_08_accum)
+sep_oct20 <- merge_pair(data_2020_09_10_inst, data_2020_09_10_accum)
+nov_dec20 <- merge_pair(data_2020_11_12_inst, data_2020_11_12_accum)
+
+year2020 <- stack_year(list(jan_feb20, mar_apr20, may_jun20,
+                             jul_aug20, sep_oct20, nov_dec20))
+```
+
+```{r}
+# 2021
+jan_feb21 <- merge_pair(data_2021_01_02_inst, data_2021_01_02_accum)
+mar_apr21 <- merge_pair(data_2021_03_04_inst, data_2021_03_04_accum)
+may_jun21 <- merge_pair(data_2021_05_06_inst, data_2021_05_06_accum)
+jul_aug21 <- merge_pair(data_2021_07_08_inst, data_2021_07_08_accum)
+sep_oct21 <- merge_pair(data_2021_09_10_inst, data_2021_09_10_accum)
+nov_dec21 <- merge_pair(data_2021_11_12_inst, data_2021_11_12_accum)
+
+year2021 <- stack_year(list(jan_feb21, mar_apr21, may_jun21,
+                             jul_aug21, sep_oct21, nov_dec21))
+
+# 2022
+jan_feb22 <- merge_pair(data_2022_01_02_inst, data_2022_01_02_accum)
+mar_apr22 <- merge_pair(data_2022_03_04_inst, data_2022_03_04_accum)
+may_jun22 <- merge_pair(data_2022_05_06_inst, data_2022_05_06_accum)
+jul_aug22 <- merge_pair(data_2022_07_08_inst, data_2022_07_08_accum)
+sep_oct22 <- merge_pair(data_2022_09_10_inst, data_2022_09_10_accum)
+nov_dec22 <- merge_pair(data_2022_11_12_inst, data_2022_11_12_accum)
+
+year2022 <- stack_year(list(jan_feb22, mar_apr22, may_jun22,
+                             jul_aug22, sep_oct22, nov_dec22))
+```
+
+```{r}
+# 3. repeat ①–② for 2018 … 2022, then
+big_2017_2022 <- stack_all_years(list(year2017, year2018, year2019, year2020, year2021, year2022))
+
+# big_2017_2022 is now a pure in-memory object with:
+#   longitude  – numeric vector
+#   latitude   – numeric vector
+#   time       – POSIX-style numeric vector (concatenated 6 × 6 years)
+#   u10, v10, …, tp, ssrd …  – 3-D arrays of shape [lon × lat × total_time]
+```
+
+```{r}
+dim(year2022$u10)
+dim(big_2017_2022$u10)
+range(big_2017_2022$time)
+range(year2017$time)
+range(year2018$time)
+range(year2022$time)
+```
+
+```{r}
+# Add humidity column
+T     <- big_2017_2022$t2m
+T_dew <- big_2017_2022$d2m
+
+if (max(T, na.rm = TRUE) > 200) {
+  big_2017_2022$t2m     <- big_2017_2022$t2m - 273.15
+  big_2017_2022$d2m <- big_2017_2022$d2m - 273.15
+  T <- T - 273.15
+  T_dew <- T_dew - 273.15
+}
+
+#RH <- 100 * exp((17.625 * (T_dew - T)) /
+#                ((T_dew + 243.04) * (T + 243.04)))
+
+RH <- 100 * (exp((17.625 * T_dew)/(243.04 + T_dew))/exp((17.625 * T)/(243.04 + T)))
+
+big_2017_2022$humidity <- RH
+
+summary(big_2017_2022$humidity)
+range(T)
+```
+
+```{r}
+# Add wind speed column
+u10 <- big_2017_2022$u10
+v10 <- big_2017_2022$v10
+
+wind_speed <- sqrt(u10^2 + v10^2)
+
+big_2017_2022$wind_speed <- wind_speed
+
+summary(big_2017_2022$humidity)
+```
+
+```{r}
+summary(big_2017_2022$wind_speed)
+```
+
+
+```{r, eval = FALSE}
+head(big_2017_2022$time)
+tail(big_2017_2022$time)
+```
+
+```{r}
+# Seperating time into date and time (hourly)
+
+time_posix <- as.POSIXct(big_2017_2022$time,
+                         origin = "1970-01-01",   # Unix epoch
+                         tz     = "UTC")          # ERA5 timestamps are UTC
+
+## 2. Derive the new vectors
+big_2017_2022$date <- as.Date(time_posix)
+big_2017_2022$hour <- format(time_posix, "%H:%M:%S")
+
+## 3. Quick sanity check
+head(cbind(time   = big_2017_2022$time[1:6],
+           date   = big_2017_2022$date[1:6],
+           hour   = big_2017_2022$hour[1:6]))
+```
+
+```{r}
+flatten_big <- function(ds, vars, tz = "UTC") {
+  lon <- ds$longitude
+  lat <- ds$latitude
+  t   <- ds$time
+  nlon <- length(lon); nlat <- length(lat); nt <- length(t)
+
+  # ❶ build index grid (lon × lat × time)
+  idx <- CJ(lon_id = seq_len(nlon),
+            lat_id = seq_len(nlat),
+            time_id = seq_len(nt),
+            sorted = FALSE)
+
+  # ❷ map indices to actual coordinate values
+  idx[, longitude := lon[lon_id]]
+  idx[, latitude  := lat[lat_id]]
+
+  # ❸ convert time_id into date and hour directly
+  time_posix <- as.POSIXct(t, origin = "1970-01-01", tz = tz)
+  idx[, `:=`(
+    date = as.Date(time_posix[time_id]),
+    hour = format(time_posix[time_id], "%H")
+  )]
+
+  # ❹ flatten each 3-D variable into a column
+  for (v in vars) {
+    message("flattening ", v, " …")
+    idx[, (v) := as.vector(ds[[v]]) ]
+  }
+
+  # drop helper indices
+  idx[, c("lon_id", "lat_id", "time_id") := NULL]
+
+  # reorder columns nicely
+  setcolorder(idx, c("longitude", "latitude", "date", "hour", vars))
+
+  return(idx[])
+}
+```
+
+```{r}
+vars <- setdiff(names(big_2017_2022), c("longitude", "latitude", "time", "date", "hour", "datetime"))
+flattened_data <- flatten_big(big_2017_2022, vars)
+```
+
+```{r}
+setnames(flattened_data, 
+         old = c("u10", "v10", "d2m", "t2m", "sp", 
+                 "i10fg", "tcc", "ptype", "blh", 
+                 "tp", "ssrc", "ssrd"),
+         new = c("10m u-component of wind", "10m v-component of wind", "2m dewpoint temp", "2m temperature", "Surface Pressure", 
+                 "Instantaneous 10m wind gust", "Total cloud cover", "Precipitation type", "Boundary layer height", 
+                 "total_precipitation", "Surface net solar radiation, clear sky", "Surface solar radiation downwards"))
+
+setDT(flattened_data)
+```
+
+# Checking for problematic observations
+```{r}
+range(flattened_data$date)
+```
+
+```{r}
+summary(flattened_data$longitude)
+summary(flattened_data$latitude)
+summary(flattened_data$`10m u-component of wind`)
+summary(flattened_data$`10m v-component of wind`)
+```
+
+```{r}
+summary(flattened_data$`2m dewpoint temp`)
+summary(flattened_data$`2m temperature`)
+summary(flattened_data$`Surface Pressure`)
+summary(flattened_data$`Instantaneous 10m wind gust`)
+```
+
+```{r}
+summary(flattened_data$`Total cloud cover`)
+summary(flattened_data$`Precipitation type`)
+summary(flattened_data$`Boundary layer height`)
+summary(flattened_data$total_precipitation)
+```
+
+```{r}
+flattened_data[ , `:=`(
+  `Surface net solar radiation, clear sky` =
+        `Surface net solar radiation, clear sky` / 86400,
+  `Surface solar radiation downwards` =
+        `Surface solar radiation downwards` / 86400
+)]
+```
+
+
+```{r}
+summary(flattened_data$`Surface net solar radiation, clear sky`)
+summary(flattened_data$`Surface solar radiation downwards`)
+```
+
+```{r}
+# Make negative downards radiation to 0 as negatove radiation is not possible
+flattened_data[`Surface solar radiation downwards` < 0,
+   `Surface solar radiation downwards` := 0]
+
+# Check to see that no columns appear
+flattened_data[`Surface solar radiation downwards` < 0]
+```
+
+
+```{r}
+total_na <- sum(is.na(flattened_data))
+
+# Should be zero
+total_na
+```
+
+Questions about the data
+- Is precipitation type binary? If so what does it represent? yes, 0 is no rain, 1 is rain
+- what units is total_precipitation in? (in m) values do make sense
+- Can there be negative downwards solar radiation? yes
+- Is the -9 degrees dewpoint temp possible? Seems like its not
+
+# Checking rows with low dew point temp
+```{r, eval = FALSE}
+cold_dew <- flattened_data[`2m dewpoint temp` <= 0]
+cold_dew
+```
+** below 0 dew point makes sense in the winter
+
+# Create data set for daily data
+```{r}
+value_vars <- setdiff(
+  names(flattened_data),
+  c("longitude", "latitude", "date", "hour", "Precipitation type")
+)
+
+# helper that returns the mode (with a tie-breaker that keeps 0)
+mode_binary <- \(x) {
+  if (all(is.na(x))) return(NA_integer_)
+  m <- mean(x, na.rm = TRUE)
+  if (m > 0.5) 1L else 0L
+}
+
+daily_data <- flattened_data[
+  ,
+  c(                                     # combine two summaries
+    lapply(.SD, \(x) mean(x, na.rm = TRUE)),      # numeric means
+    .(`Precipitation type` = mode_binary(`Precipitation type`))
+  ),
+  by = .(longitude, latitude, date),
+  .SDcols = value_vars
+]
+
+head(flattened_data)
+head(daily_data)
+```
+
+```{r}
+summary(flattened_data$date)
+```
+
+```{r}
+daily_data[date == "2022-01-01"]
+```
+
+```{r, eval = FALSE}
+# Downloading hourly data 
+fwrite(flattened_data, "era5_hourly_data.csv")
+
+# Save daily averages
+fwrite(daily_data, "era5_daily_avg.csv")
+```
+
+```{r}
+summary(daily_data$'era5_2m_temperature')
+```
+
+
+# Remove 10m u and v components of wind from daily_data as we won't use it anymore
+```{r}
+daily_data[, c("10m u-component of wind", "10m v-component of wind") := NULL]
+```
+
+# Create a leaflet map
+```{r}
+target_date <- as.Date("2022-03-04")
+map_data <- daily_data[date == target_date]
+```
+
+```{r}
+# Load shape files
+bangladesh_boundary <- st_read("shape/bgd_admbnda_adm0_bbs_20201113.shp")
+bangladesh_boundary <- st_transform(bangladesh_boundary, crs = 4326)
+```
+
+```{r}
+# Get positions of the sites
+sites_data <- data.table::fread("new_cleanedPM2.5 (1).csv")
+
+sites_data <- unique(sites_data[, .(`PM y`, `PM x`)])
+setnames(sites_data, c("PM y", "PM x"), c("latitude", "longitude"))
+sites_data[, site_id := .I] 
+
+#length(unique(daily_data$date))
+```
+
+```{r}
+# Add city to sites_data
+
+city <- c("Dhaka", "Dhaka","Gazipur", "Narayanganj", "Chattogram", "Chattogram", "Sylhet", "Khulna","Rajshahi", "Barishal", "Savar" ,"Rangpur" , "Mymensingh","Cumilla", "Narsingdi")
+
+latitude <- c("23.76", "23.78", "23.99", "23.63", "22.36", "22.32", "24.89", "22.84","24.38", "22.71", "23.95" ,"25.73" , "24.76","23.47", "23.93")
+longitude <- c("90.39", "90.36", "90.42", "90.51", "91.80", "91.81", "91.87", "89.53", "88.61","90.36", "90.28", "89.25","90.40","91.18", "90.72")
+
+city_data <- tibble(
+  city      = city,
+  latitude  = as.numeric(latitude),
+  longitude = as.numeric(longitude)
+) 
+
+sites_data <- sites_data |>
+  mutate(
+    latitude  = as.numeric(latitude),
+    longitude = as.numeric(longitude)
+  ) |>
+  left_join(city_data, by = c("latitude", "longitude"))
+
+sites_data
+```
+
+
+```{r}
+leaflet(map_data) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addCircleMarkers(
+    lng = ~longitude,
+    lat = ~latitude,
+    radius = 5,
+    stroke = FALSE,
+    fillOpacity = 0.7,
+    color = ~colorNumeric("RdYlBu", `2m temperature`, reverse = TRUE)(`2m temperature`),
+    label = ~paste("Temp:", round(`2m temperature`, 1), "°C")
+  ) %>%
+  addPolygons(
+    data = bangladesh_boundary,
+    fill = FALSE,             
+    color = "black",      
+    weight = 2, 
+    opacity = 1
+  ) %>%
+  addLegend("bottomright", pal = colorNumeric("RdYlBu", map_data$`2m temperature`, reverse = TRUE),
+            values = map_data$`2m temperature`, title = "2m Temp (°C)") %>%
+
+addCircleMarkers(
+    data = sites_data,
+    lng = ~longitude, lat = ~latitude,
+    radius = 5,
+    color = "darkgreen",
+    fillOpacity = 0.8,
+    stroke = TRUE,
+    label = ~paste("Site at", city, ": ", "(", round(latitude, 3), ",", round(longitude, 3), ")")
+  )
+```
+
+```{r}
+sites_sf  <- st_as_sf(sites_data,
+                      coords = c("longitude", "latitude"),
+                      crs = 4326)
+
+# pick a projected CRS in metres; UTM-46N (EPSG:32646) is fine for Bangladesh
+sites_buff <- sites_sf |>
+  st_transform(32646) |>
+  st_buffer(dist = 30000)         # 30 km
+
+# keep site_id with the geometry
+sites_buff$site_id <- sites_data$site_id
+
+## 2 ── one-time lookup: which ERA5 grid cell falls in which buffer ───────
+grid_coords <- unique(daily_data[, .(longitude, latitude)])
+grid_sf <- st_as_sf(grid_coords, coords = c("longitude", "latitude"),
+                    crs = 4326) |>
+           st_transform(32646)
+
+hit_list <- st_intersects(grid_sf, sites_buff)
+
+grid2site <- data.table(
+  grid_id = rep(seq_along(hit_list), lengths(hit_list)),
+  site_id = unlist(hit_list)
+)
+
+## 3 ── attach lon/lat once for convenience
+grid2site <- grid2site[
+  , cbind(.SD, grid_coords[grid_id, ]),
+  .SDcols = c("grid_id", "site_id")
+]
+
+head(grid2site)
+```
+
+
+```{r}
+value_vars <- setdiff(names(daily_data),
+                      c("longitude","latitude","date"))
+
+# merge daily ERA5 with the lookup
+daily_with_site <- merge(daily_data, grid2site,
+                         by = c("longitude","latitude"),
+                         allow.cartesian = TRUE)
+
+all_value_cols <- setdiff(names(daily_data),
+                          c("longitude", "latitude", "date"))
+
+ptype_col   <- "Precipitation type" 
+mean_cols   <- setdiff(all_value_cols, ptype_col)
+
+# Helper: mode for a binary vector (ties → 0)
+mode_binary <- \(x) {
+  if (all(is.na(x)))        return(NA_real_)
+  if (mean(x, na.rm = TRUE) > 0.5) 1 else 0   # 0 on a 50–50 tie
+}
+
+# Aggregate: mean for most vars + mode for p-type
+site_data_daily <- daily_with_site[ ,
+  c(
+    lapply(.SD, \(x) mean(x, na.rm = TRUE)),             # averages
+    .( `Precipitation type` = mode_binary(`Precipitation type`) )
+  ),
+  by = .(site_id, date),
+  .SDcols = mean_cols
+]
+
+
+# Attach site coordinates (one per site_id)
+site_data_daily <- merge(
+  site_data_daily,
+  sites_data[, .(site_id, city, latitude, longitude)],
+  by = "site_id"
+)
+
+# should be 15 sites × 2191 days = 32865 rows
+dim(site_data_daily)
+```
+
+```{r}
+setnames(site_data_daily, 
+         old = c("2m dewpoint temp", "2m temperature", "Surface Pressure", 
+                 "Instantaneous 10m wind gust", "Total cloud cover", "Precipitation type", "Boundary layer height", 
+                 "total_precipitation", "Surface net solar radiation, clear sky", "Surface solar radiation downwards", "humidity", "wind_speed"),
+         new = c("era5_2m_dewpoint_temp", "era5_2m_temperature", "era5_surface_pressure", 
+                 "era5_instantaneous_10m_wind_gust", "era5_total_cloud_cover", "era5_precipitation_type", "era5_boundary_layer_height", 
+                 "era5_hourly_average_precipitation", "era5_surface_net_solar_radiation_clear_sky", "era5_surface_solar_radiation_downwards", "era5_humidity",
+                 "era5_wind_speed"))
+```
+
+```{r}
+head(site_data_daily)
+```
+
+```{r, eval = FALSE}
+fwrite(site_data_daily, "era5_daily_data_per_site.csv")
+```
+
+```{r}
+target_date <- as.Date("2022-01-01")
+site_data_daily[date == target_date]
+```
+
+# Mergeing the two data together
+```{r}
+pm2.5_data <- data.table::fread("True3_PM2.5.csv")
+```
+
+```{r}
+names(pm2.5_data)
+dim(pm2.5_data)
+```
+
+```{r}
+# Ensure all PM2.5 data has minimum value of 1
+
+pm2.5_data$PM2.5[pm2.5_data$PM2.5 < 1] <- 1
+```
+
+```{r}
+head(pm2.5_data)
+```
+
+```{r}
+# Observe that there are duplicate rows present in here
+subset_rows <- pm2.5_data[pm2.5_data$Date == as.Date("2017-02-01"), ]
+subset_rows
+```
+
+```{r}
+# Remove duplicate rows
+pm2.5_data <- unique(pm2.5_data)
+
+# Make sure # of rows decreased
+dim(pm2.5_data)
+```
+
+```{r}
+cols_to_remove <- c("Time", "City", "Year", "Month")
+pm2.5_data[ , (cols_to_remove) := NULL]
+
+setnames(pm2.5_data, 
+         old = c("Wind Spd", "Wind Dir", 
+                 "Avg Temp", "Avg Hum", "Rainfall Per Hour", "Daily Total Rainfall", "PM y", "PM x", "Date"),
+         new = c("pm2.5_wind_spd", "pm2.5_wind_dir", "pm2.5_avg_temp", 
+                 "pm2.5_avg_hum", "pm2.5_rainfall_per_hour", "pm2.5_daily_total_rainfall",
+                 "latitude", "longitude", "date"))
+```
+
+```{r}
+head(pm2.5_data)
+```
+
+```{r}
+# Make sure the minimum value of PM2.5 is >= 1
+summary(pm2.5_data$PM2.5)
+```
+
+```{r}
+site_data_daily[ , date := as.IDate(date)]
+
+merged_data <- merge(
+  site_data_daily,
+  pm2.5_data,
+  by  = c("latitude", "longitude", "date"),
+  all = TRUE
+)
+
+tail(merged_data)
+```
+
+```{r}
+head(merged_data)
+```
+
+```{r}
+dim(merged_data)
+```
+
+```{r}
+names(merged_data)
+```
+
+```{r}
+fwrite(merged_data, "era5_pm2.5_merged.csv")
+```
+

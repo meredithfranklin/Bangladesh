@@ -1,0 +1,2844 @@
+---
+title: "10-fold_validations"
+output: html_document
+date: "2025-07-15"
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(mgcv)
+library(dtplyr)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(broom)
+library(tidytext)
+library(tm)
+library(reshape2)
+library(sf)
+library(caret)
+```
+
+General Outline
+1. Split data into 80-20 (randomly)
+  - 80 for hyperparameter tuning
+  - 20 for training and validating
+
+2. Perform hyperparameter tuning on the 80
+
+3. Split data into 10-folds (temporal and random) and use the hyperparameters found to train the model (also for leave one-site-out)
+
+4. Show results
+
+## 1
+```{r}
+# Load data
+
+total_data <- data.table::fread("cleanedPM2.5_for_xgboost.csv")
+```
+
+```{r}
+# Ensure the data is new
+
+# 1. check if some of the maiac data is not there anymore
+names(total_data)
+
+# 2. check that era5_surface_pressure is divided by 1000, check the max 
+summary(total_data$era5_surface_pressure)
+summary(total_data$PM2.5)
+```
+
+```{r}
+# Modify the date of the week to a numeric column to add it in as a predictor
+total_data$week_day_numeric <- wday(total_data$Date)
+
+head(total_data)
+```
+
+```{r}
+#Split data
+
+set.seed(123) 
+n          <- nrow(total_data)
+train_idx  <- sample(seq_len(n),
+                     size = floor(0.8 * n))
+
+hyperparameter_tuning <- total_data[train_idx]
+test_set  <- total_data[-train_idx]
+```
+
+## 2
+```{r}
+pm2.5_var <- c( "pm2.5_wind_spd", "pm2.5_wind_dir", "pm2.5_avg_temp", "pm2.5_avg_hum",
+                "pm2.5_rainfall_per_hour", "pm2.5_daily_total_rainfall",
+                "SO2_land", "NO_land", "NO2_land", "CO_land", "O3_land")
+cols_to_remove2 <- c("pm2.5_rainfall_per_hour", "era5_instantaneous_10m_wind_gust", "era5_surface_solar_radiation_downwards", pm2.5_var)
+```
+
+```{r}
+cols_not_include <- c(cols_to_remove2, "PM2.5", "site_id", "city", "Date", "day_of_week")
+
+pred_names <- setdiff(names(hyperparameter_tuning), cols_not_include)
+predictors <- as.data.frame(hyperparameter_tuning[, ..pred_names])
+
+target <- hyperparameter_tuning$PM2.5
+```
+
+```{r}
+names(predictors)
+```
+
+```{r}
+# Make graph for presentation
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+# Reshape data and count non-missing values by month and year for each variable
+monthly_counts <- total_data %>%
+  tidyr::pivot_longer(
+    cols = c(AOT_055, AOT_CWV, AOT_IJH),
+    names_to = "Variable",
+    values_to = "Value"
+  ) %>%
+  dplyr::group_by(year, month, Variable) %>%
+  dplyr::summarise(Count = sum(!is.na(Value)), .groups = "drop") %>%
+  dplyr::filter(year == 2021) %>%              # if year is numeric; use "2022" if it's character
+  dplyr::mutate(Month = factor(month, levels = 1:12))
+
+ggplot(monthly_counts, aes(x = Month, y = Count, fill = Variable)) +
+  geom_col(position = "dodge") +
+  scale_x_discrete(drop = FALSE) +             # show all months 1..12
+  labs(title = "Monthly Observation Counts of Gases for Each Variable in 2021",
+       x = "Month", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r, evaluate = FALSE}
+# Prepare the grid
+full_grid <- expand.grid(
+  nrounds = 100,
+  eta = seq(0.05, 0.25, by = 0.05),
+  max_depth = 10:20,
+  min_child_weight = 15:25,
+  colsample_bytree = seq(0.5, 1, by = 0.1),
+  subsample = 1,
+  gamma = 0 #default
+)
+```
+
+```{r}
+# Prepare the grid
+full_grid <- expand.grid(
+  nrounds = 100,
+  eta = seq(0.05, 0.15, by = 0.05),
+  max_depth = 10:20,
+  min_child_weight = 5:16,
+  colsample_bytree = seq(0.6, 1, by = 0.1),
+  subsample = 1,
+  gamma = 0 #default
+)
+```
+
+```{r}
+# Choose rows
+n_total <- nrow(full_grid)
+
+prop      <- 0.3
+
+set.seed(123)
+pick_rows <- sample(seq_len(n_total),
+                    size = ceiling(prop * n_total),
+                    replace = FALSE)
+rgs_grid  <- full_grid[pick_rows, ]
+```
+
+```{r}
+ctrl <- trainControl(
+  method      = "cv",
+  number      = 10,
+  verboseIter = TRUE,
+  allowParallel = TRUE
+)
+```
+
+```{r}
+set.seed(123)
+xgb_rgs <- caret::train(
+  x          = predictors,
+  y          = target,
+  method     = "xgbTree",
+  tuneGrid   = rgs_grid,
+  trControl  = ctrl,
+  metric     = "Rsquared"
+)
+```
+
+```{r}
+best_hp <- xgb_rgs$bestTune
+print(best_hp)
+
+# CV performance for *that* combo (RMSE, R², MAE, etc.)
+best_perf <- dplyr::right_join(xgb_rgs$results, best_hp,
+                               by = intersect(names(xgb_rgs$results),
+                                              names(best_hp)))
+print(best_perf[, c("RMSE", "Rsquared", "MAE")])
+```
+
+# Best Parameter
+nrounds: 100
+max_depth: 16
+eta: 0.05
+gamma: 0
+colsample_bytree: 0.7
+min_child_weight: 5
+subsample: 1
+
+RMSE: 37.81455
+R^2: 0.7249456
+MAE: 21.14937
+
+```{r}
+# Do another grid search on a smaller grid with higher portion
+
+smaller_grid <- expand.grid(
+  nrounds = 100,
+  eta = c(0.01, 0.05, 0.10),
+  max_depth = 16:22,
+  min_child_weight = 3:15,
+  colsample_bytree = seq(0.6, 0.9, by = 0.1),
+  subsample = 1,
+  gamma = 0 #default
+)
+
+n_total <- nrow(smaller_grid)
+
+prop      <- 0.5
+
+set.seed(123)
+pick_rows <- sample(seq_len(n_total),
+                    size = ceiling(prop * n_total),
+                    replace = FALSE)
+rgs_grid2  <- smaller_grid[pick_rows, ]
+```
+
+```{r}
+set.seed(123)
+xgb_rgs2 <- caret::train(
+  x          = predictors,
+  y          = target,
+  method     = "xgbTree",
+  tuneGrid   = rgs_grid2,
+  trControl  = ctrl,
+  metric     = "Rsquared"
+)
+```
+
+```{r}
+# Get the best grid
+best_grid <- xgb_rgs2$bestTune
+```
+
+```{r}
+# Prepare the grid to find the best nrounds parameter
+best_grid <- expand.grid(
+  nrounds = c(100, 200, 250, 500, 1000),
+  eta = 0.05,
+  max_depth = 18,
+  min_child_weight = 16,
+  colsample_bytree = 0.8,
+  subsample = 1,
+  gamma = 0 #default
+)
+```
+
+```{r, eval = FALSE}
+set.seed(456)
+ctrl_10 <- trainControl(method = "cv",
+                        number = 10,
+                        verboseIter = TRUE,
+                        allowParallel = TRUE)
+
+xgb_rgs <- caret::train(
+  x          = predictors,
+  y          = target,
+  method     = "xgbTree",
+  tuneGrid   = best_grid,
+  trControl  = ctrl,
+  metric     = "RMSE"
+)
+```
+
+```{r}
+best_hp <- xgb_rgs2$bestTune
+print(best_hp)
+
+# 2. CV performance for *that* combo (RMSE, R², MAE, etc.)
+best_perf <- dplyr::right_join(xgb_rgs2$results, best_hp,
+                               by = intersect(names(xgb_rgs2$results),
+                                              names(best_hp)))
+print(best_perf[, c("RMSE", "Rsquared", "MAE")])
+```
+
+## Try new hyperparameter tuning
+```{r}
+# Load data
+
+total_data <- data.table::fread("cleanedPM2.5_for_xgboost.csv")
+```
+
+```{r}
+# Modify the date of the week to a numeric column to add it in as a predictor
+total_data$week_day_numeric <- wday(total_data$Date)
+```
+
+```{r}
+#Split data
+
+set.seed(456) 
+n          <- nrow(total_data)
+train_idx  <- sample(seq_len(n),
+                     size = floor(0.7 * n))
+
+hyperparameter_tuning <- total_data[train_idx]
+test_set  <- total_data[-train_idx]
+```
+
+```{r}
+pm2.5_var <- c( "pm2.5_wind_spd", "pm2.5_wind_dir", "pm2.5_avg_temp", "pm2.5_avg_hum",
+                "pm2.5_rainfall_per_hour", "pm2.5_daily_total_rainfall",
+                "SO2_land", "NO_land", "NO2_land", "CO_land", "O3_land")
+cols_to_remove2 <- c("pm2.5_rainfall_per_hour", "era5_instantaneous_10m_wind_gust", "era5_surface_solar_radiation_downwards", pm2.5_var)
+```
+
+```{r}
+cols_not_include <- c(cols_to_remove2, "PM2.5", "site_id", "city", "Date", "day_of_week")
+
+pred_names <- setdiff(names(hyperparameter_tuning), cols_not_include)
+predictors <- as.data.frame(hyperparameter_tuning[, ..pred_names])
+
+target <- hyperparameter_tuning$PM2.5
+```
+
+```{r}
+# Prepare the grid
+full_grid <- expand.grid(
+  nrounds = 100,
+  eta = seq(0.05, 0.15, by = 0.05),
+  max_depth = 10:20,
+  min_child_weight = 5:18,
+  colsample_bytree = seq(0.6, 1, by = 0.1),
+  subsample = 1,
+  gamma = 0 #default
+)
+```
+
+```{r}
+# Choose rows
+n_total <- nrow(full_grid)
+
+prop      <- 0.5
+
+set.seed(123)
+pick_rows <- sample(seq_len(n_total),
+                    size = ceiling(prop * n_total),
+                    replace = FALSE)
+rgs_grid  <- full_grid[pick_rows, ]
+```
+
+```{r}
+ctrl <- trainControl(
+  method      = "cv",
+  number      = 10,
+  verboseIter = TRUE,
+  allowParallel = TRUE
+)
+```
+
+```{r}
+set.seed(123)
+xgb_rgs <- caret::train(
+  x          = predictors,
+  y          = target,
+  method     = "xgbTree",
+  tuneGrid   = rgs_grid,
+  trControl  = ctrl,
+  metric     = "Rsquared"
+)
+```
+
+```{r}
+best_hp <- xgb_rgs$bestTune
+
+test_predictors <- as.data.frame(test_set[, ..pred_names])
+
+test_target <- test_set$PM2.5
+```
+
+```{r}
+set.seed(123)
+xgb_rgs_fit <- caret::train(
+  x          = test_predictors,
+  y          = test_target,
+  method     = "xgbTree",
+  tuneGrid   = best_hp,
+  trControl  = ctrl,
+  metric     = "Rsquared"
+)
+```
+
+```{r}
+xgb_rgs_fit$results
+```
+
+
+===============================================================================
+# Validation
+
+## 3
+```{r}
+head(for_validation)
+```
+
+## Get a variable improtance plot
+```{r}
+vi <- varImp(xgb_rgs, scale = TRUE)
+plot(vi)
+```
+
+```{r}
+library(xgboost)
+xgb_model <- xgb_rgs$finalModel
+
+# Get the feature names robustly even if you didn’t keep `predictors` around:
+feat_names <- setdiff(colnames(xgb_rgs$trainingData), ".outcome")
+
+imp <- xgb.importance(feature_names = feat_names, model = xgb_model)
+head(imp)  # columns: Feature, Gain, Cover, Frequency
+
+# Optional plot:
+xgb.plot.importance(imp, top_n = 30)
+```
+
+
+# Random-10 fold
+```{r}
+best_grid <- xgb_rgs$bestTune
+
+best_grid
+```
+
+```{r}
+ctrl <- trainControl(method = "cv",
+                        number = 10,
+                        verboseIter = TRUE,
+                        allowParallel = TRUE)
+
+set.seed(456)
+validation_10fold <- train(
+  x = predictors,
+  y = target,
+  method = "xgbTree",
+  trControl = ctrl,
+  tuneGrid = best_grid,
+  metric = "Rsquared"
+)
+```
+
+```{r}
+print(validation_10fold$results)
+```
+
+# Test on entire 20% dataset
+```{r}
+preds <- predict(xgb_rgs, newdata = test_data[, ..pred_names])
+actual <- test_data$PM2.5
+  
+  
+# Compute metrics
+r2_val   <- caret::R2(preds, actual)
+```
+
+```{r}
+print(r2_val)
+```
+
+# leave-one site out
+```{r}
+# Get all the site id
+site_ids <- unique(hyperparameter_tuning$site_id)
+
+# Create a data frame to store the results
+results <- data.frame(site_id = character(),
+                      Rsquared = numeric(),
+                      RMSE = numeric(),
+                      stringsAsFactors = FALSE)
+
+# Set up the control
+loso_ctrl <- trainControl(
+  method      = "none",
+  verboseIter = TRUE,
+  allowParallel = TRUE)
+
+```
+
+```{r}
+for (site in site_ids) {
+  # Split the data
+  test_data <- hyperparameter_tuning %>% filter(site_id == site)
+  train_data <- hyperparameter_tuning %>% filter(site_id != site)
+  
+  # Train xgboost using best hyperparameters
+  set.seed(123)
+  model <- caret::train(
+    x = as.data.frame(train_data[, ..pred_names]),
+    y = train_data$PM2.5,
+    method = "xgbTree",
+    tuneGrid = best_grid,
+    trControl = loso_ctrl,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+  
+  # Make predictions
+  preds <- predict(model, newdata = test_data[, ..pred_names])
+  actual <- test_data$PM2.5
+  
+  
+  # Compute metrics
+  r2_val   <- caret::R2(preds, actual)
+  rmse_val <- caret::RMSE(preds, actual)
+
+  # Save the results
+  results <- rbind(results, data.frame(site_id = site, Rsquared = r2_val, RMSE = rmse_val))
+}
+```
+
+```{r}
+print(results)
+```
+
+```{r}
+# Get the averages
+mean(results$Rsquared)
+mean(results$RMSE)
+```
+
+
+# Temporal 10-fold
+```{r}
+validation_for_temporal <- copy(hyperparameter_tuning)
+head(validation_for_temporal)
+```
+
+```{r}
+# Make sure data is in chronological order
+setorder(validation_for_temporal, Date)
+head(validation_for_temporal)
+```
+
+```{r}
+# Create the temporal 10-folds by assigning a new column: "fold"
+n <- nrow(validation_for_temporal)
+fold_sizes <- floor(n / 10)
+remainder  <- n %% 10
+
+fold_ids <- rep(1:10, each = fold_sizes)
+if (remainder > 0) {
+  fold_ids <- c(fold_ids, rep(10, remainder))
+}
+
+validation_for_temporal$fold <- fold_ids
+
+head(validation_for_temporal)
+```
+
+```{r}
+# Sanity check the folds are in chronological order
+fold_1  <- validation_for_temporal[fold == 1]
+fold_2 <- validation_for_temporal[fold == 2]
+fold_3 <- validation_for_temporal[fold == 3]
+
+range(fold_1$Date)
+range(fold_2$Date)
+range(fold_3$Date)
+```
+
+```{r}
+# Prepare necessary variables for caculating temporal 10-fold
+folds <- c(2, 3, 4, 5, 6, 7, 8, 9, 10)
+
+temporal_results <- data.frame(fold_id = character(),
+                      Rsquared = numeric(),
+                      RMSE = numeric(),
+                      stringsAsFactors = FALSE)
+
+cols_not_include_temporal <- c(cols_to_remove2, "PM2.5", "site_id", "city", "Date", "day_of_week", "day_of_week", "fold")
+
+temporal_pred_names <- setdiff(names(hyperparameter_tuning), cols_not_include_temporal)
+
+temporal_ctrl <- trainControl(
+  method      = "none",
+  verboseIter = TRUE,
+  allowParallel = TRUE)
+```
+
+```{r}
+all_preds <- list()
+
+set.seed(123)
+for (fold_val in folds) {
+  # Split the data
+  test_data <- validation_for_temporal %>% filter(fold == fold_val)
+  train_data <- validation_for_temporal %>% filter(fold < fold_val)
+  
+  # Train xgboost using best hyperparameters
+  model <- caret::train(
+    x = as.data.frame(train_data[, ..temporal_pred_names]),
+    y = train_data$PM2.5,
+    method = "xgbTree",
+    tuneGrid = best_grid,
+    trControl = temporal_ctrl,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+  
+  # Make predictions
+  preds <- predict(model, newdata = test_data[, ..temporal_pred_names])
+  actual <- test_data$PM2.5
+  
+  all_preds[[as.character(fold_val)]] <- data.frame(
+  fold_id = fold_val,
+  actual  = actual,
+  pred    = preds
+  )
+  
+  # Compute metrics
+  r2_val   <- caret::R2(preds, actual)
+  rmse_val <- caret::RMSE(preds, actual)
+
+  # Save the results
+  temporal_results <- rbind(temporal_results, data.frame(fold_id = fold_val, Rsquared = r2_val, RMSE = rmse_val))
+}
+```
+
+```{r}
+print(temporal_results)
+```
+
+```{r}
+# Get the averages
+mean(temporal_results$Rsquared)
+mean(temporal_results$RMSE)
+```
+
+```{r}
+all_preds_df <- dplyr::bind_rows(all_preds)
+
+plot(all_preds_df$actual, all_preds_df$pred,
+     xlab = "Actual PM2.5", ylab = "Predicted PM2.5",
+     main = "Actual vs Predicted (Temporal 10-fold)",
+     pch = 16, cex = 0.6)
+abline(0, 1, col = "red", lwd = 2)
+grid()
+```
+
+===============================================================================
+## For Ensembling
+```{r}
+library(data.table)
+train_ensemble_dt <- fread("train_data.csv")
+test_ensemble_dt <- fread("test_data.csv")
+
+head(train_ensemble_dt)
+head(test_ensemble_dt)
+```
+
+```{r}
+setnames(train_ensemble_dt, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+head(train_ensemble_dt)
+
+setnames(test_ensemble_dt, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+head(test_ensemble_dt)
+```
+
+```{r}
+ensemble_train <- merge(
+  train_ensemble_dt, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+
+head(ensemble_train)
+
+ensemble_test <- merge(
+  test_ensemble_dt, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+head(ensemble_test)
+```
+
+```{r}
+names(ensemble_test)
+```
+
+```{r, eval = FALSE}
+# Join keys = columns present in both tables (or specify explicitly)
+by_cols <- c("Date", "PM2.5", "Target_Lon", "Target_Lat")
+
+# Optional: de-duplicate keys on the right to speed things up
+test_keys <- unique(test_ensemble_dt[, ..by_cols])
+
+# Anti-join: rows in total_data NOT present in test_ensemble_dt
+ensemble_test <- total_data[!test_keys, on = by_cols]
+
+head(ensemble_test)
+```
+
+```{r}
+# Sanity check that the rows in the two datasets match
+dim(total_data)
+dim(ensemble_train)
+dim(train_ensemble_dt)
+dim(ensemble_test)
+dim(test_ensemble_dt)
+```
+
+```{r}
+# Sanity check that the range of dates in the two datasets match
+range(ensemble_train$Date)
+range(train_ensemble_dt$Date)
+
+range(ensemble_test$Date)
+range(test_ensemble_dt$Date)
+```
+
+```{r, eval = FALSE}
+## Setup for random 10-fold
+folds <- c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+
+cols_not_include_random <- c(cols_to_remove2, "PM2.5", "site_id", "city", "Date", "day_of_week", "day_of_week", "fold_id")
+
+random_pred_names <- setdiff(names(ensemble_test), cols_not_include_temporal)
+
+random_ctrl <- trainControl(
+  method      = "none",
+  verboseIter = TRUE,
+  allowParallel = TRUE)
+
+head(ensemble_test)
+```
+
+```{r}
+# Prepare for new ensembling
+
+cols_not_include2 <- c(cols_to_remove2, "PM2.5", "site_id", "city", "Date", "day_of_week", "day_of_week")
+
+ensemble_pred_names <- setdiff(names(ensemble_test), cols_not_include2)
+
+ensemble_ctrl <- trainControl(method = "cv",
+                        number = 10,
+                        verboseIter = TRUE,
+                        allowParallel = TRUE)
+
+x = as.data.frame(ensemble_train[, ..ensemble_pred_names])
+head(x)
+```
+
+```{r}
+model <- caret::train(
+    x = as.data.frame(ensemble_train[, ..ensemble_pred_names]),
+    y = ensemble_train$PM2.5,
+    method = "xgbTree",
+    tuneGrid = best_grid,
+    trControl = ensemble_ctrl,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+```
+
+```{r}
+# get prediction
+preds <- predict(model, newdata = ensemble_test[, ..ensemble_pred_names])
+```
+
+```{r}
+head(preds)
+head(ensemble_test)
+```
+
+```{r}
+preds_dt <- data.table(
+  actual    = ensemble_test$"PM2.5",
+  predicted = as.numeric(preds)
+)
+
+fwrite(preds_dt, "predictions.csv")
+```
+
+```{r}
+caret::R2(preds, ensemble_test$"PM2.5")
+```
+
+================================================================================
+## Ensembling 2.0
+```{r}
+small_part <- fread("smallpart.csv")
+
+
+setnames(small_part, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+
+maiac_ensemble_tune <- anti_join(
+  total_data,
+  small_part,
+  by = c("Date", "PM2.5", "Target_Lon", "Target_Lat")
+)
+```
+
+```{r}
+pm2.5_var <- c( "pm2.5_wind_spd", "pm2.5_wind_dir", "pm2.5_avg_temp", "pm2.5_avg_hum",
+                "pm2.5_rainfall_per_hour", "pm2.5_daily_total_rainfall",
+                "SO2_land", "NO_land", "NO2_land", "CO_land", "O3_land")
+cols_to_remove2 <- c("pm2.5_rainfall_per_hour", "era5_instantaneous_10m_wind_gust", "era5_surface_solar_radiation_downwards", pm2.5_var)
+```
+
+```{r}
+cols_not_include <- c(cols_to_remove2, "PM2.5", "site_id", "city", "Date", "day_of_week")
+
+pred_names <- setdiff(names(maiac_ensemble_train), cols_not_include)
+ens_predictors <- as.data.frame(maiac_ensemble_train[, ..pred_names])
+
+ens_target <- maiac_ensemble_train$PM2.5
+```
+
+```{r}
+# Prepare the grid
+full_grid <- expand.grid(
+  nrounds = 100,
+  eta = seq(0.05, 0.20, by = 0.05),
+  max_depth = 10:22,
+  min_child_weight = 5:18,
+  colsample_bytree = seq(0.6, 1, by = 0.1),
+  subsample = 1,
+  gamma = 0 #default
+)
+```
+
+```{r}
+# Choose rows
+n_total <- nrow(full_grid)
+
+prop      <- 0.5
+
+set.seed(1002)
+pick_rows <- sample(seq_len(n_total),
+                    size = ceiling(prop * n_total),
+                    replace = FALSE)
+rgs_grid  <- full_grid[pick_rows, ]
+```
+
+```{r}
+ens_ctrl <- trainControl(
+  method      = "cv",
+  number      = 10,
+  verboseIter = TRUE,
+  allowParallel = TRUE
+)
+```
+
+```{r}
+set.seed(1002)
+xgb_tune <- caret::train(
+  x          = ens_predictors,
+  y          = ens_target,
+  method     = "xgbTree",
+  tuneGrid   = rgs_grid,
+  trControl  = ens_ctrl,
+  metric     = "Rsquared"
+)
+```
+
+```{r}
+best_hp_tune <- xgb_tune$bestTune
+print(best_hp_tune)
+
+# CV performance for *that* combo (RMSE, R², MAE, etc.)
+best_perf <- dplyr::right_join(xgb_tune$results, best_hp_tune,
+                               by = intersect(names(xgb_tune$results),
+                                              names(best_hp_tune)))
+print(best_perf[, c("RMSE", "Rsquared", "MAE")])
+```
+
+```{r}
+big_part <- data.table::fread("bigpart.csv")
+
+setnames(big_part, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+
+maiac_ensemble_train <- merge(
+  big_part, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+
+maiac_predictors <- c("Target_Lat", "Target_Lon", "AOT_055", "AOT_CWV", "AOT_IJH", "era5_2m_dewpoint_temp", "era5_2m_temperature", "era5_surface_pressure", "era5_boundary_layer_height", "era5_total_cloud_cover", "era5_hourly_average_precipitation", "era5_surface_net_solar_radiation_clear_sky", "era5_humidity", "era5_wind_speed", "era5_precipitation_type", "julian_day", "month", "year", "week_day_numeric")
+
+ens_predictors <- as.data.frame(maiac_ensemble_train[, ..maiac_predictors])
+
+ens_target <- maiac_ensemble_train$PM2.5
+
+# Train
+ens_ctrl2 <- trainControl(
+  method      = "cv",
+  number      = 10,
+  verboseIter = TRUE,
+  allowParallel = TRUE
+)
+
+set.seed(1002)
+xgb_ens <- caret::train(
+  x          = ens_predictors,
+  y          = ens_target,
+  method     = "xgbTree",
+  tuneGrid   = best_hp_tune,
+  trControl  = ens_ctrl2,
+  metric     = "Rsquared"
+)
+```
+
+```{r}
+best_hppp <- xgb_ens$bestTune
+print(best_hp_tune)
+
+# CV performance for *that* combo (RMSE, R², MAE, etc.)
+best_perf <- dplyr::right_join(xgb_ens$results, best_hppp,
+                               by = intersect(names(xgb_ens$results),
+                                              names(best_hppp)))
+print(best_perf[, c("RMSE", "Rsquared", "MAE")])
+```
+
+```{r}
+small_part <- data.table::fread("smallpart.csv")
+
+setnames(small_part, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+
+maiac_ensemble_test <- merge(
+  small_part, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+
+veranda_predictions_maiac <- predict(xgb_ens, 
+                                     newdata = as.data.frame(maiac_ensemble_test[, ..pred_names]))
+```
+
+```{r}
+ens_pred_temp <- data.table(
+  lat <- maiac_ensemble_test$Target_Lat,
+  lon <- maiac_ensemble_test$Target_Lon,
+  actual    = maiac_ensemble_test$"PM2.5",
+  predicted = as.numeric(veranda_predictions_maiac)
+)
+
+fwrite(ens_pred_temp, "ensemble_predictions_temp.csv")
+```
+
+________________________________________________________________
+
+```{r}
+# Download khalid's data
+khalid_data <- fread("final_data.csv")
+big_part <- fread("bigpart.csv")
+small_part <- fread("smallpart.csv")
+  
+# Define constants
+sentinel_best_hp <- expand.grid(
+  nrounds = 100,
+  eta = 0.05,
+  max_depth = 14,
+  min_child_weight = 11,
+  colsample_bytree = 0.7,
+  subsample = 0.8,
+  gamma = 0
+)
+
+maiac_best_hp <- expand.grid(
+  nrounds = 100,
+  eta = 0.05,
+  max_depth = 14,
+  min_child_weight = 11,
+  colsample_bytree = 0.7,
+  subsample = 0.8,
+  gamma = 0
+)
+
+sentinel_predictors <- c("era5_2m_temperature", "era5_surface_pressure",  "era5_total_cloud_cover", "era5_boundary_layer_height", "era5_surface_solar_radiation_downwards", "era5_humidity", "era5_wind_speed", "era5_precipitation_type", "PM.x", "PM.y", "CO", "HCHO", "NO2", "O3","SO2", "CH4","AER_AI_340_380","CLOUD_FRACTION", "Month", "CLOUD_OPTICAL_THICKNESS", "CLOUD_BASE_HEIGHT", "Julian_Date")
+
+maiac_non_predictors <- c(cols_to_remove2, "PM2.5", "site_id", "city", "Date", "day_of_week", "day_of_week")
+
+maiac_predictors <- setdiff(names(ensemble_test), maiac_non_predictors)
+
+ensemble_ctrl <- trainControl(method = "cv",
+                        number = 10,
+                        savePredictions = "final",
+                        verboseIter = TRUE,
+                        allowParallel = TRUE)
+```
+
+```{r}
+sentinel_train <-  merge(
+  big_part, khalid_data,
+  by   = c("Date", "PM.x" , "PM.y", "PM2.5"),
+  all  = FALSE,
+  sort = FALSE
+)
+
+sentinel_test <-  merge(
+  small_part, khalid_data,
+  by   = c("Date", "PM.x" , "PM.y", "PM2.5"),
+  all  = FALSE,
+  sort = FALSE
+)
+```
+
+```{r}
+setnames(big_part, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+
+setnames(small_part, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+```
+
+```{r}
+total_data <- data.table::fread("cleanedPM2.5_for_xgboost.csv")
+total_data$week_day_numeric <- wday(total_data$Date)
+
+ensemble10_train <- merge(
+  train_big, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+
+ensemble10_test <- merge(
+  small_part, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+```
+
+```{r}
+dim(total_data)
+dim(big_part)
+dim(unique(big_part))
+dim(ensemble10_train)
+dim(sentinel_train)
+```
+
+```{r}
+set.seed(1002)
+maiac_model <- caret::train(
+    x = as.data.frame(ensemble10_train[, ..maiac_predictors]),
+    y = ensemble10_train$PM2.5,
+    method = "xgbTree",
+    #tuneGrid = maiac_best_hp,
+    tuneGrid = xgb_rgs_fit$bestTune,
+    trControl = ensemble_ctrl,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+set.seed(1002)
+sentinel_model <- caret::train(
+    x = as.data.frame(sentinel_train[, ..sentinel_predictors]),
+    y = sentinel_train$PM2.5,
+    method = "xgbTree",
+    tuneGrid = sentinel_best_hp,
+    trControl = ensemble_ctrl,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+```
+
+```{r}
+oof_A <- maiac_model$pred
+oof_B <- sentinel_model$pred
+
+oof2 <- merge(
+  oof_A[, c("rowIndex","Resample","pred","obs")],
+  oof_B[, c("rowIndex","Resample","pred", "obs")],
+  by = c("obs", "rowIndex"),
+  suffixes = c("_A","_B")
+)
+
+head(oof_A)
+head(oof_B)
+dim(oof_A)
+dim(oof_B)
+dim(oof2)
+```
+
+```{r}
+oof <- merge(
+  oof_A[, c("rowIndex","Resample","pred","obs")],
+  oof_B[, c("rowIndex","Resample","pred", "obs")],
+  #by = c("obs", "rowIndex"),
+  by = c("obs", "rowIndex"),
+  suffixes = c("_A","_B")
+)
+
+# Now build your meta/combiner on OOF preds ONLY
+actuals_oof <- oof$obs
+maiac_oof   <- oof$pred_A
+sentinel_oof<- oof$pred_B
+```
+
+```{r}
+rmse <- function(a,b) sqrt(mean((a-b)^2))
+
+best <- optimize(
+  function(w) rmse(actuals_oof, w*maiac_oof + (1-w)*sentinel_oof),
+  interval = c(0,1)
+)
+w_star <- best$minimum
+
+# (b) Linear regression stacking (unconstrained, with intercept)
+meta_lm <- lm(actuals_oof ~ maiac_oof + sentinel_oof)
+
+# (c) Non-negative least squares (no intercept)
+X_oof <- cbind(maiac_oof, sentinel_oof)
+fit_nn <- nnls(X_oof, actuals_oof)
+w_nnls <- coef(fit_nn)
+w_nnls <- w_nnls / sum(w_nnls)   # optional: normalize to sum to 1
+```
+
+```{r}
+set.seed(1002)
+
+fit_maiac_full <- caret::train(
+    x = as.data.frame(ensemble10_train[, ..maiac_predictors]),
+    y = ensemble10_train$PM2.5,
+    method = "xgbTree",
+    #tuneGrid = maiac_best_hp,
+    tuneGrid = xgb_rgs_fit$bestTune,
+    trControl = trainControl(method = "none"),
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+fit_sentinel_full <- caret::train(
+    x = as.data.frame(sentinel_train[, ..sentinel_predictors]),
+    y = sentinel_train$PM2.5,
+    method = "xgbTree",
+    tuneGrid = sentinel_best_hp,
+    trControl = trainControl(method = "none"),
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+pred_A_new <- predict(fit_maiac_full,    newdata = ensemble10_test[, ..maiac_predictors])
+pred_B_new <- predict(fit_sentinel_full, newdata = sentinel_test[, ..sentinel_predictors])
+
+# Apply the learned combiners
+pred_weighted <- w_star*pred_A_new + (1 - w_star)*pred_B_new
+
+pred_lm <- predict(
+  meta_lm,
+  newdata = data.frame(
+    maiac_oof    = pred_A_new,
+    sentinel_oof = pred_B_new
+  )
+)
+
+pred_nnls <- as.vector(cbind(pred_A_new, pred_B_new) %*% w_nnls)
+```
+
+```{r}
+results <- data.frame(
+  actual          = ensemble10_test$PM2.5,
+  weighted_pred   = pred_weighted,
+  lm_pred         = pred_lm,
+  nnls_pred       = pred_nnls
+)
+
+results
+
+# assume y_new is the vector of true PM2.5 values
+metrics <- function(pred, y) {
+  c(
+    RMSE = sqrt(mean((pred - y)^2)),
+    MAE  = mean(abs(pred - y)),
+    R2   = 1 - sum((y - pred)^2) / sum((y - mean(y))^2)
+  )
+}
+
+results_tbl <- rbind(
+  Weighted = metrics(pred_weighted, ensemble10_test$PM2.5),
+  Linear   = metrics(pred_lm, ensemble10_test$PM2.5),
+  NNLS     = metrics(pred_nnls, ensemble10_test$PM2.5)
+)
+
+print(results_tbl)
+```
+
+```{r}
+w_star
+
+(1 - w_star)
+
+pred_B_new
+```
+
+================================================================================
+## Ensembling 2.1
+```{r}
+small_part <- fread("smallpart.csv")
+training_part <- fread("training_half.csv")
+
+setnames(training_part, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+
+setnames(small_part, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+
+to_remove <- bind_rows(training_part, small_part)
+
+for_tuning <- anti_join(
+  total_data,
+  to_remove,
+  by = c("Date", "PM2.5", "Target_Lon", "Target_Lat")
+)
+```
+
+```{r}
+#set.seed(456) 
+#n          <- nrow(maiac_ensemble_tunetrain)
+#train_idx  <- sample(seq_len(n), size = floor(0.5 * n))
+
+#for_tuning <- maiac_ensemble_tunetrain[train_idx]
+#for_training  <- maiac_ensemble_tunetrain[-train_idx]
+```
+
+```{r}
+maiac_predictors <- c("Target_Lat", "Target_Lon", "AOT_055", "AOT_CWV", "AOT_IJH", "era5_2m_dewpoint_temp", "era5_2m_temperature", "era5_surface_pressure", "era5_boundary_layer_height", "era5_total_cloud_cover", "era5_hourly_average_precipitation", "era5_surface_net_solar_radiation_clear_sky", "era5_humidity", "era5_wind_speed", "era5_precipitation_type", "julian_day", "month", "year", "week_day_numeric")
+```
+
+```{r}
+tune_predictors <- as.data.frame(for_tuning[, ..maiac_predictors])
+
+tune_target <- for_tuning$PM2.5
+```
+
+```{r}
+# Prepare the grid
+full_grid <- expand.grid(
+  nrounds = 100,
+  eta = seq(0.05, 0.20, by = 0.05),
+  max_depth = 10:22,
+  min_child_weight = 5:15,
+  colsample_bytree = seq(0.6, 1, by = 0.1),
+  subsample = 1,
+  gamma = 0 #default
+)
+```
+
+```{r}
+# Choose rows
+n_total <- nrow(full_grid)
+
+prop      <- 0.5
+
+set.seed(1002)
+pick_rows <- sample(seq_len(n_total),
+                    size = ceiling(prop * n_total),
+                    replace = FALSE)
+tune_grid  <- full_grid[pick_rows, ]
+```
+
+```{r}
+tune_ctrl <- trainControl(
+  method      = "cv",
+  number      = 10,
+  verboseIter = TRUE,
+  allowParallel = TRUE
+)
+```
+
+```{r}
+set.seed(1002)
+xgb_tune <- caret::train(
+  x          = tune_predictors,
+  y          = tune_target,
+  method     = "xgbTree",
+  tuneGrid   = tune_grid,
+  trControl  = tune_ctrl,
+  metric     = "Rsquared"
+)
+```
+
+```{r}
+best_hp_tune <- xgb_tune$bestTune
+print(best_hp_tune)
+
+# CV performance for *that* combo (RMSE, R², MAE, etc.)
+best_perf <- dplyr::right_join(xgb_tune$results, best_hp_tune,
+                               by = intersect(names(xgb_tune$results),
+                                              names(best_hp_tune)))
+print(best_perf[, c("RMSE", "Rsquared", "MAE")])
+```
+
+```{r}
+for_training <- merge(
+  training_part, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+
+dim(for_training)
+dim(training_part)
+```
+
+```{r}
+training_predictors <- as.data.frame(for_training[, ..maiac_predictors])
+
+training_target <- for_training$PM2.5
+
+# Train
+ens_ctrl_train <- trainControl(
+  method      = "cv",
+  number      = 10,
+  verboseIter = TRUE,
+  allowParallel = TRUE
+)
+
+set.seed(1002)
+xgb_ens <- caret::train(
+  x          = training_predictors,
+  y          = training_target,
+  method     = "xgbTree",
+  tuneGrid   = best_hp_tune,
+  trControl  = ens_ctrl_train,
+  metric     = "Rsquared"
+)
+```
+
+```{r}
+trained_best_hp <- xgb_ens$bestTune
+print(best_hp_tune)
+
+# CV performance for *that* combo (RMSE, R², MAE, etc.)
+best_perf <- dplyr::right_join(xgb_ens$results, trained_best_hp,
+                               by = intersect(names(xgb_ens$results),
+                                              names(trained_best_hp)))
+print(best_perf[, c("RMSE", "Rsquared", "MAE")])
+```
+
+```{r}
+small_part <- data.table::fread("smallpart.csv")
+
+setnames(small_part, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+
+maiac_ensemble_test <- merge(
+  small_part, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+
+veranda_predictions_maiac <- predict(xgb_ens, 
+                                     newdata = as.data.frame(maiac_ensemble_test[, ..pred_names]))
+```
+
+```{r}
+ens_pred_temp <- data.table(
+  lat <- maiac_ensemble_test$Target_Lat,
+  lon <- maiac_ensemble_test$Target_Lon,
+  actual    = maiac_ensemble_test$"PM2.5",
+  predicted = as.numeric(veranda_predictions_maiac)
+)
+
+fwrite(ens_pred_temp, "ensemble_predictions_temp.csv")
+```
+
+________________________________________________________________
+
+```{r}
+# Download khalid's data
+khalid_data <- fread("final_data.csv")
+big_part <- fread("bigpart.csv")
+small_part <- fread("smallpart.csv")
+  
+# Define constants
+sentinel_best_hp <- expand.grid(
+  nrounds = 100,
+  eta = 0.05,
+  max_depth = 14,
+  min_child_weight = 11,
+  colsample_bytree = 0.7,
+  subsample = 0.8,
+  gamma = 0
+)
+
+maiac_best_hp <- expand.grid(
+  nrounds = 100,
+  eta = 0.05,
+  max_depth = 14,
+  min_child_weight = 11,
+  colsample_bytree = 0.7,
+  subsample = 0.8,
+  gamma = 0
+)
+
+sentinel_predictors <- c("era5_2m_temperature", "era5_surface_pressure",  "era5_total_cloud_cover", "era5_boundary_layer_height", "era5_surface_solar_radiation_downwards", "era5_humidity", "era5_wind_speed", "era5_precipitation_type", "PM.x", "PM.y", "CO", "HCHO", "NO2", "O3","SO2", "CH4","AER_AI_340_380","CLOUD_FRACTION", "Month", "CLOUD_OPTICAL_THICKNESS", "CLOUD_BASE_HEIGHT", "Julian_Date")
+
+maiac_non_predictors <- c(cols_to_remove2, "PM2.5", "site_id", "city", "Date", "day_of_week", "day_of_week")
+
+maiac_predictors <- setdiff(names(ensemble_test), maiac_non_predictors)
+
+ensemble_ctrl <- trainControl(method = "cv",
+                        number = 10,
+                        savePredictions = "final",
+                        verboseIter = TRUE,
+                        allowParallel = TRUE)
+```
+
+```{r}
+sentinel_train <-  merge(
+  big_part, khalid_data,
+  by   = c("Date", "PM.x" , "PM.y", "PM2.5"),
+  all  = FALSE,
+  sort = FALSE
+)
+
+sentinel_test <-  merge(
+  small_part, khalid_data,
+  by   = c("Date", "PM.x" , "PM.y", "PM2.5"),
+  all  = FALSE,
+  sort = FALSE
+)
+```
+
+```{r}
+setnames(big_part, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+
+setnames(small_part, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+```
+
+```{r}
+total_data <- data.table::fread("cleanedPM2.5_for_xgboost.csv")
+total_data$week_day_numeric <- wday(total_data$Date)
+
+ensemble10_train <- merge(
+  train_big, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+
+ensemble10_test <- merge(
+  small_part, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+```
+
+```{r}
+dim(total_data)
+dim(big_part)
+dim(unique(big_part))
+dim(ensemble10_train)
+dim(sentinel_train)
+```
+
+
+```{r}
+set.seed(1002)
+maiac_model <- caret::train(
+    x = as.data.frame(ensemble10_train[, ..maiac_predictors]),
+    y = ensemble10_train$PM2.5,
+    method = "xgbTree",
+    #tuneGrid = maiac_best_hp,
+    tuneGrid = xgb_rgs_fit$bestTune,
+    trControl = ensemble_ctrl,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+set.seed(1002)
+sentinel_model <- caret::train(
+    x = as.data.frame(sentinel_train[, ..sentinel_predictors]),
+    y = sentinel_train$PM2.5,
+    method = "xgbTree",
+    tuneGrid = sentinel_best_hp,
+    trControl = ensemble_ctrl,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+```
+
+```{r}
+oof_A <- maiac_model$pred
+oof_B <- sentinel_model$pred
+
+oof2 <- merge(
+  oof_A[, c("rowIndex","Resample","pred","obs")],
+  oof_B[, c("rowIndex","Resample","pred", "obs")],
+  by = c("obs", "rowIndex"),
+  suffixes = c("_A","_B")
+)
+
+head(oof_A)
+head(oof_B)
+dim(oof_A)
+dim(oof_B)
+dim(oof2)
+```
+
+```{r}
+oof <- merge(
+  oof_A[, c("rowIndex","Resample","pred","obs")],
+  oof_B[, c("rowIndex","Resample","pred", "obs")],
+  #by = c("obs", "rowIndex"),
+  by = c("obs", "rowIndex"),
+  suffixes = c("_A","_B")
+)
+
+# Now build your meta/combiner on OOF preds ONLY
+actuals_oof <- oof$obs
+maiac_oof   <- oof$pred_A
+sentinel_oof<- oof$pred_B
+```
+
+```{r}
+rmse <- function(a,b) sqrt(mean((a-b)^2))
+
+best <- optimize(
+  function(w) rmse(actuals_oof, w*maiac_oof + (1-w)*sentinel_oof),
+  interval = c(0,1)
+)
+w_star <- best$minimum
+
+# (b) Linear regression stacking (unconstrained, with intercept)
+meta_lm <- lm(actuals_oof ~ maiac_oof + sentinel_oof)
+
+# (c) Non-negative least squares (no intercept)
+X_oof <- cbind(maiac_oof, sentinel_oof)
+fit_nn <- nnls(X_oof, actuals_oof)
+w_nnls <- coef(fit_nn)
+w_nnls <- w_nnls / sum(w_nnls)   # optional: normalize to sum to 1
+```
+
+```{r}
+set.seed(1002)
+
+fit_maiac_full <- caret::train(
+    x = as.data.frame(ensemble10_train[, ..maiac_predictors]),
+    y = ensemble10_train$PM2.5,
+    method = "xgbTree",
+    #tuneGrid = maiac_best_hp,
+    tuneGrid = xgb_rgs_fit$bestTune,
+    trControl = trainControl(method = "none"),
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+fit_sentinel_full <- caret::train(
+    x = as.data.frame(sentinel_train[, ..sentinel_predictors]),
+    y = sentinel_train$PM2.5,
+    method = "xgbTree",
+    tuneGrid = sentinel_best_hp,
+    trControl = trainControl(method = "none"),
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+pred_A_new <- predict(fit_maiac_full,    newdata = ensemble10_test[, ..maiac_predictors])
+pred_B_new <- predict(fit_sentinel_full, newdata = sentinel_test[, ..sentinel_predictors])
+
+# Apply the learned combiners
+pred_weighted <- w_star*pred_A_new + (1 - w_star)*pred_B_new
+
+pred_lm <- predict(
+  meta_lm,
+  newdata = data.frame(
+    maiac_oof    = pred_A_new,
+    sentinel_oof = pred_B_new
+  )
+)
+
+pred_nnls <- as.vector(cbind(pred_A_new, pred_B_new) %*% w_nnls)
+```
+
+```{r}
+results <- data.frame(
+  actual          = ensemble10_test$PM2.5,
+  weighted_pred   = pred_weighted,
+  lm_pred         = pred_lm,
+  nnls_pred       = pred_nnls
+)
+
+results
+
+# assume y_new is the vector of true PM2.5 values
+metrics <- function(pred, y) {
+  c(
+    RMSE = sqrt(mean((pred - y)^2)),
+    MAE  = mean(abs(pred - y)),
+    R2   = 1 - sum((y - pred)^2) / sum((y - mean(y))^2)
+  )
+}
+
+results_tbl <- rbind(
+  Weighted = metrics(pred_weighted, ensemble10_test$PM2.5),
+  Linear   = metrics(pred_lm, ensemble10_test$PM2.5),
+  NNLS     = metrics(pred_nnls, ensemble10_test$PM2.5)
+)
+
+print(results_tbl)
+```
+
+```{r}
+w_star
+
+(1 - w_star)
+
+pred_B_new
+```
+
+============================================================
+# Try the 10 times loop (Bad approach)
+```{r}
+# Download khalid's data
+khalid_data <- fread("bigpart.csv")
+  
+# Define constants
+sentinel_best_hp <- expand.grid(
+  nrounds = 100,
+  eta = 0.05,
+  max_depth = 13,
+  min_child_weight = 7,
+  colsample_bytree = 0.8,
+  subsample = 1,
+  gamma = 0
+)
+
+maiac_best_hp <- best_grid
+
+sentinel_predictors <- c("era5_2m_temperature", "era5_surface_pressure",  "era5_total_cloud_cover", "era5_boundary_layer_height", "era5_surface_solar_radiation_downwards", "era5_humidity", "era5_wind_speed", "era5_precipitation_type", "PM.x", "PM.y", "CO", "HCHO", "NO2", "O3","SO2", "CH4","AER_AI_340_380","CLOUD_FRACTION", "Month", "CLOUD_OPTICAL_THICKNESS", "CLOUD_BASE_HEIGHT", "Julian_Date")
+
+maiac_non_predictors <- c(cols_to_remove2, "PM2.5", "site_id", "city", "Date", "day_of_week", "day_of_week")
+
+maiac_predictors <- setdiff(names(ensemble_test), maiac_non_predictors)
+
+ensemble_ctrl <- trainControl(method = "cv",
+                        number = 10,
+                        verboseIter = TRUE,
+                        allowParallel = TRUE)
+```
+
+```{r}
+# Split the data accordingly
+set.seed(1002)
+split_index1 <- createDataPartition(khalid_data$PM2.5, p = 0.8, list = FALSE)
+big_part1 <- khalid_data[split_index1, ]
+
+small_part1  <- khalid_data[-split_index1, ]
+
+train_big <- big_part1[, c("Date", "PM2.5", "PM.x", "PM.y")]
+
+test_small <- small_part1[, c("Date", "PM2.5", "PM.x", "PM.y")]
+```
+
+```{r}
+setnames(train_big, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+
+setnames(test_small, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+```
+
+```{r}
+ensemble10_train <- merge(
+  train_big, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+
+ensemble10_test <- merge(
+  test_small, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+```
+
+```{r}
+head(ensemble10_test)
+head(small_part1)
+```
+
+```{r}
+maiac_model <- caret::train(
+    x = as.data.frame(ensemble10_train[, ..maiac_predictors]),
+    y = ensemble10_train$PM2.5,
+    method = "xgbTree",
+    tuneGrid = maiac_best_hp,
+    trControl = ensemble_ctrl,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+sentinel_model <- caret::train(
+    x = as.data.frame(big_part1[, ..sentinel_predictors]),
+    y = big_part1$PM2.5,
+    method = "xgbTree",
+    tuneGrid = sentinel_best_hp,
+    trControl = ensemble_ctrl,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+```
+
+```{r}
+maiac_preds <- predict(maiac_model, newdata = ensemble10_test[, ..maiac_predictors])
+
+maiac_preds_dt <- data.table(
+  actual    = ensemble10_test$"PM2.5",
+  predicted = as.numeric(maiac_preds)
+)
+
+sentinel_preds <- predict(sentinel_model, newdata = small_part1[, ..sentinel_predictors])
+
+sentinel_preds_dt <- data.table(
+  actual    = small_part1$"PM2.5",
+  predicted = as.numeric(sentinel_preds)
+)
+```
+
+```{r}
+maiac_preds <- maiac_preds_dt$predicted
+
+sentinel_preds <- sentinel_preds_dt$predicted
+
+actuals <- s_results$actual
+
+# grid search for best weights
+best <- optimize(function(w) {
+  ensemble <- w * maiac_preds + (1 - w) * sentinel_preds
+  rmse(actuals, ensemble)   # actuals = true observed values
+}, interval = c(0, 1))
+
+weight <- best$minimum
+weight
+
+weighted_preds <- weight * maiac_preds + (1 - weight) * sentinel_preds
+
+#linear regression
+
+meta_data <- data.frame(
+  model1 = maiac_preds,
+  model2 = sentinel_preds,
+  y = actuals
+)
+
+meta_model <- lm(y ~ model1 + model2, data = meta_data)
+
+lm_preds <- predict(meta_model, newdata = meta_data)
+
+#nnls
+
+X <- cbind(maiac_preds, sentinel_preds)
+fit <- nnls(X, actuals)
+
+weights <- coef(fit) / sum(coef(fit))  # normalize weights
+nnls_preds <- X %*% weights
+
+
+metrics <- function(pred, y) {
+  c(
+    RMSE = sqrt(mean((pred - y)^2)),
+    MAE  = mean(abs(pred - y)),
+    R2   = 1 - sum((y - pred)^2) / sum((y - mean(y))^2)
+  )
+}
+
+test <- rbind(
+  linear_regression = metrics(lm_preds, actuals),
+  weighted = metrics(weighted_preds, actuals),
+  NNLS = metrics(nnls_preds, actuals)
+)
+
+test
+```
+
+# Make the loop
+```{r}
+set.seed(123)
+for (i in c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)) {
+  # Split data
+  split_index1 <- createDataPartition(khalid_data$PM2.5, p = 0.8, list = FALSE)
+  big_part1 <- khalid_data[split_index1, ]
+
+  small_part1  <- khalid_data[-split_index1, ]
+
+  train_big <- big_part1[, c("Date", "PM2.5", "PM.x", "PM.y")]
+  
+  test_small <- small_part1[, c("Date", "PM2.5", "PM.x", "PM.y")]
+  
+  # get the two sets 
+  setnames(train_big, 
+          old = c("PM.x", "PM.y"),
+          new = c("Target_Lon", "Target_Lat"))
+
+  setnames(test_small, 
+          old = c("PM.x", "PM.y"),
+          new = c("Target_Lon", "Target_Lat"))
+
+  ensemble10_train <- merge(
+    train_big, total_data,
+    by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+    all  = FALSE,
+    sort = FALSE
+  )
+
+  ensemble10_test <- merge(
+    test_small, total_data,
+    by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+    all  = FALSE,
+    sort = FALSE
+  )
+  
+  # Make the two models
+  maiac_model <- caret::train(
+      x = as.data.frame(ensemble10_train[, ..maiac_predictors]),
+      y = ensemble10_train$PM2.5,
+      method = "xgbTree",
+      tuneGrid = maiac_best_hp,
+      trControl = ensemble_ctrl,
+      metric = "Rsquared",
+      verbose = FALSE
+    )
+
+  sentinel_model <- caret::train(
+      x = as.data.frame(big_part1[, ..sentinel_predictors]),
+      y = big_part1$PM2.5,
+      method = "xgbTree",
+      tuneGrid = sentinel_best_hp,
+      trControl = ensemble_ctrl,
+      metric = "Rsquared",
+      verbose = FALSE
+    )
+  maiac_preds <- predict(maiac_model, newdata = ensemble10_test[, ..maiac_predictors])
+
+  maiac_preds_dt <- data.table(
+    actual    = ensemble10_test$"PM2.5",
+    predicted = as.numeric(maiac_preds)
+  )
+
+  sentinel_preds <- predict(sentinel_model, newdata = small_part1[, ..sentinel_predictors])
+
+  sentinel_preds_dt <- data.table(
+    actual    = small_part1$"PM2.5",
+    predicted = as.numeric(sentinel_preds)
+  )
+  
+  
+}
+```
+
+================================================================================
+## Try this method with OOF predictions
+
+```{r}
+# Download khalid's data
+khalid_data <- fread("final_data.csv")
+  
+# Define constants
+sentinel_best_hp <- expand.grid(
+  nrounds = 100,
+  eta = 0.05,
+  max_depth = 13,
+  min_child_weight = 7,
+  colsample_bytree = 0.8,
+  subsample = 1,
+  gamma = 0
+)
+
+maiac_best_hp <- expand.grid(
+  nrounds = 100,
+  eta = 0.05,
+  max_depth = 16,
+  min_child_weight = 5,
+  colsample_bytree = 0.7,
+  subsample = 1,
+  gamma = 0
+)
+
+sentinel_predictors <- c("era5_2m_temperature", "era5_surface_pressure",  "era5_total_cloud_cover", "era5_boundary_layer_height", "era5_surface_solar_radiation_downwards", "era5_humidity", "era5_wind_speed", "era5_precipitation_type", "PM.x", "PM.y", "CO", "HCHO", "NO2", "O3","SO2", "CH4","AER_AI_340_380","CLOUD_FRACTION", "Month", "CLOUD_OPTICAL_THICKNESS", "CLOUD_BASE_HEIGHT", "Julian_Date")
+
+maiac_non_predictors <- c(cols_to_remove2, "PM2.5", "site_id", "city", "Date", "day_of_week", "day_of_week")
+
+maiac_predictors <- setdiff(names(ensemble_test), maiac_non_predictors)
+
+ensemble_ctrl <- trainControl(method = "cv",
+                        number = 10,
+                        savePredictions = "final",
+                        verboseIter = TRUE,
+                        allowParallel = TRUE)
+```
+
+```{r}
+# Split the data accordingly
+set.seed(1002)
+split_index1 <- createDataPartition(khalid_data$PM2.5, p = 0.8, list = FALSE)
+big_part1 <- khalid_data[split_index1, ]
+
+small_part1  <- khalid_data[-split_index1, ]
+
+train_big <- big_part1[, c("Date", "PM2.5", "PM.x", "PM.y")]
+
+test_small <- small_part1[, c("Date", "PM2.5", "PM.x", "PM.y")]
+```
+
+```{r}
+setnames(train_big, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+
+setnames(test_small, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+```
+
+```{r}
+total_data <- data.table::fread("cleanedPM2.5_for_xgboost.csv")
+total_data$week_day_numeric <- wday(total_data$Date)
+
+ensemble10_train <- merge(
+  train_big, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+
+ensemble10_test <- merge(
+  test_small, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+```
+
+```{r}
+maiac_model <- caret::train(
+    x = as.data.frame(ensemble10_train[, ..maiac_predictors]),
+    y = ensemble10_train$PM2.5,
+    method = "xgbTree",
+    tuneGrid = maiac_best_hp,
+    trControl = ensemble_ctrl,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+sentinel_model <- caret::train(
+    x = as.data.frame(big_part1[, ..sentinel_predictors]),
+    y = big_part1$PM2.5,
+    method = "xgbTree",
+    tuneGrid = sentinel_best_hp,
+    trControl = ensemble_ctrl,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+```
+
+```{r}
+oof_A <- maiac_model$pred
+oof_B <- sentinel_model$pred
+
+oof2 <- merge(
+  oof_A[, c("rowIndex","Resample","pred","obs")],
+  oof_B[, c("rowIndex","Resample","pred", "obs")],
+  by = c("obs", "rowIndex"),
+  suffixes = c("_A","_B")
+)
+
+head(oof_A)
+dim(oof_B)
+dim(oof2)
+```
+
+```{r}
+oof <- merge(
+  oof_A[, c("rowIndex","Resample","pred","obs")],
+  oof_B[, c("rowIndex","Resample","pred", "obs")],
+  by = c("obs", "rowIndex"),
+  suffixes = c("_A","_B")
+)
+
+# Now build your meta/combiner on OOF preds ONLY
+actuals_oof <- oof$obs
+maiac_oof   <- oof$pred_A
+sentinel_oof<- oof$pred_B
+```
+
+```{r}
+rmse <- function(a,b) sqrt(mean((a-b)^2))
+
+best <- optimize(
+  function(w) rmse(actuals_oof, w*maiac_oof + (1-w)*sentinel_oof),
+  interval = c(0,1)
+)
+w_star <- best$minimum
+
+# (b) Linear regression stacking (unconstrained, with intercept)
+meta_lm <- lm(actuals_oof ~ maiac_oof + sentinel_oof)
+
+# (c) Non-negative least squares (no intercept)
+X_oof <- cbind(maiac_oof, sentinel_oof)
+fit_nn <- nnls(X_oof, actuals_oof)
+w_nnls <- coef(fit_nn)
+w_nnls <- w_nnls / sum(w_nnls)   # optional: normalize to sum to 1
+```
+
+```{r}
+set.seed(456)
+
+fit_maiac_full <- caret::train(
+    x = as.data.frame(ensemble10_train[, ..maiac_predictors]),
+    y = ensemble10_train$PM2.5,
+    method = "xgbTree",
+    tuneGrid = maiac_best_hp,
+    trControl = trainControl(method = "none"),
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+fit_sentinel_full <- caret::train(
+    x = as.data.frame(big_part1[, ..sentinel_predictors]),
+    y = big_part1$PM2.5,
+    method = "xgbTree",
+    tuneGrid = sentinel_best_hp,
+    trControl = trainControl(method = "none"),
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+pred_A_new <- predict(fit_maiac_full,    newdata = ensemble10_test[, ..maiac_predictors])
+pred_B_new <- predict(fit_sentinel_full, newdata = small_part1[, ..sentinel_predictors])
+
+# Apply the learned combiners
+pred_weighted <- w_star*pred_A_new + (1 - w_star)*pred_B_new
+
+pred_lm <- predict(
+  meta_lm,
+  newdata = data.frame(
+    maiac_oof    = pred_A_new,
+    sentinel_oof = pred_B_new
+  )
+)
+
+pred_nnls <- as.vector(cbind(pred_A_new, pred_B_new) %*% w_nnls)
+```
+
+```{r}
+results <- data.frame(
+  actual          = ensemble10_test$PM2.5,
+  weighted_pred   = pred_weighted,
+  lm_pred         = pred_lm,
+  nnls_pred       = pred_nnls
+)
+
+results
+
+# assume y_new is the vector of true PM2.5 values
+metrics <- function(pred, y) {
+  c(
+    RMSE = sqrt(mean((pred - y)^2)),
+    MAE  = mean(abs(pred - y)),
+    R2   = 1 - sum((y - pred)^2) / sum((y - mean(y))^2)
+  )
+}
+
+results_tbl <- rbind(
+  Weighted = metrics(pred_weighted, ensemble10_test$PM2.5),
+  Linear   = metrics(pred_lm, ensemble10_test$PM2.5),
+  NNLS     = metrics(pred_nnls, ensemble10_test$PM2.5)
+)
+
+print(results_tbl)
+```
+
+=================================================================================
+# Align the predictions
+
+```{r}
+# Download khalid's data
+khalid_data <- fread("final_data.csv")
+  
+# Define constants
+sentinel_best_hp <- expand.grid(
+  nrounds = 100,
+  eta = 0.05,
+  max_depth = 13,
+  min_child_weight = 7,
+  colsample_bytree = 0.8,
+  subsample = 1,
+  gamma = 0
+)
+
+maiac_best_hp <- expand.grid(
+  nrounds = 100,
+  eta = 0.05,
+  max_depth = 16,
+  min_child_weight = 5,
+  colsample_bytree = 0.7,
+  subsample = 1,
+  gamma = 0
+)
+
+sentinel_predictors <- c("era5_2m_temperature", "era5_surface_pressure",  "era5_total_cloud_cover", "era5_boundary_layer_height", "era5_surface_solar_radiation_downwards", "era5_humidity", "era5_wind_speed", "era5_precipitation_type", "PM.x", "PM.y", "CO", "HCHO", "NO2", "O3","SO2", "CH4","AER_AI_340_380","CLOUD_FRACTION", "Month", "CLOUD_OPTICAL_THICKNESS", "CLOUD_BASE_HEIGHT", "Julian_Date")
+
+maiac_non_predictors <- c(cols_to_remove2, "PM2.5", "site_id", "city", "Date", "day_of_week", "day_of_week")
+
+maiac_predictors <- setdiff(names(ensemble_test), maiac_non_predictors)
+```
+
+```{r}
+# Split the data accordingly
+set.seed(1002)
+split_index1 <- createDataPartition(khalid_data$PM2.5, p = 0.8, list = FALSE)
+big_part1 <- khalid_data[split_index1, ]
+
+small_part1  <- khalid_data[-split_index1, ]
+
+train_big <- big_part1[, c("Date", "PM2.5", "PM.x", "PM.y")]
+
+test_small <- small_part1[, c("Date", "PM2.5", "PM.x", "PM.y")]
+```
+
+```{r}
+setnames(train_big, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+
+setnames(test_small, 
+         old = c("PM.x", "PM.y"),
+         new = c("Target_Lon", "Target_Lat"))
+```
+
+```{r}
+ensemble10_train <- merge(
+  train_big, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+
+ensemble10_test <- merge(
+  test_small, total_data,
+  by   = c("Date", "PM2.5", "Target_Lon", "Target_Lat"),
+  all  = FALSE,
+  sort = FALSE
+)
+```
+
+```{r}
+folds <- createFolds(ensemble10_train$PM2.5, k = 10, returnTrain = TRUE)
+
+ensemble_ctrl_lignup <- trainControl(method = "cv",
+                        index = folds,
+                        savePredictions = "final",
+                        verboseIter = TRUE,
+                        allowParallel = TRUE)
+```
+
+```{r}
+maiac_model <- caret::train(
+    x = as.data.frame(ensemble10_train[, ..maiac_predictors]),
+    y = ensemble10_train$PM2.5,
+    method = "xgbTree",
+    tuneGrid = maiac_best_hp,
+    trControl = ensemble_ctrl_lignup,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+sentinel_model <- caret::train(
+    x = as.data.frame(big_part1[, ..sentinel_predictors]),
+    y = big_part1$PM2.5,
+    method = "xgbTree",
+    tuneGrid = sentinel_best_hp,
+    trControl = ensemble_ctrl_lignup,
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+```
+
+```{r}
+oof_A <- maiac_model$pred
+oof_B <- sentinel_model$pred
+
+head(oof_A)
+head(oof_B)
+```
+
+```{r}
+oof <- merge(
+  oof_A[, c("rowIndex","Resample","pred","obs")],
+  oof_B[, c("rowIndex","Resample","pred", "obs")],
+  by = c("obs", "rowIndex", "Resample"),
+  suffixes = c("_A","_B")
+)
+
+# Now build your meta/combiner on OOF preds ONLY
+actuals_oof <- oof$obs
+maiac_oof   <- oof$pred_A
+sentinel_oof<- oof$pred_B
+```
+
+```{r}
+rmse <- function(a,b) sqrt(mean((a-b)^2))
+
+best <- optimize(
+  function(w) rmse(actuals_oof, w*maiac_oof + (1-w)*sentinel_oof),
+  interval = c(0,1)
+)
+w_star <- best$minimum
+
+# (b) Linear regression stacking (unconstrained, with intercept)
+meta_lm <- lm(actuals_oof ~ maiac_oof + sentinel_oof)
+
+# (c) Non-negative least squares (no intercept)
+X_oof <- cbind(maiac_oof, sentinel_oof)
+fit_nn <- nnls(X_oof, actuals_oof)
+w_nnls <- coef(fit_nn)
+w_nnls <- w_nnls / sum(w_nnls)   # optional: normalize to sum to 1
+
+rmse <- function(p, y) sqrt(mean((p - y)^2))
+rmse_maiac    <- rmse(oof$pred_maiac, oof$actual)
+rmse_sentinel <- rmse(oof$pred_sentinel, oof$actual)
+w_maiac    <- 1 / rmse_maiac^2
+w_sentinel <- 1 / rmse_sentinel^2
+w_sum <- w_maiac + w_sentinel
+w_maiac    <- w_maiac / w_sum
+w_sentinel <- w_sentinel / w_sum
+rmse_weighted <- w_maiac * pred_maiac + w_sentinel * pred_sentinel
+```
+
+```{r}
+set.seed(456)
+
+fit_maiac_full <- caret::train(
+    x = as.data.frame(ensemble10_train[, ..maiac_predictors]),
+    y = ensemble10_train$PM2.5,
+    method = "xgbTree",
+    tuneGrid = maiac_best_hp,
+    trControl = trainControl(method = "none"),
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+fit_sentinel_full <- caret::train(
+    x = as.data.frame(big_part1[, ..sentinel_predictors]),
+    y = big_part1$PM2.5,
+    method = "xgbTree",
+    tuneGrid = sentinel_best_hp,
+    trControl = trainControl(method = "none"),
+    metric = "Rsquared",
+    verbose = FALSE
+  )
+
+pred_A_new <- predict(fit_maiac_full,    newdata = ensemble10_test[, ..maiac_predictors])
+pred_B_new <- predict(fit_sentinel_full, newdata = small_part1[, ..sentinel_predictors])
+
+# Apply the learned combiners
+pred_weighted <- w_star*pred_A_new + (1 - w_star)*pred_B_new
+
+pred_lm <- predict(
+  meta_lm,
+  newdata = data.frame(
+    maiac_oof    = pred_A_new,
+    sentinel_oof = pred_B_new
+  )
+)
+
+pred_nnls <- as.vector(cbind(pred_A_new, pred_B_new) %*% w_nnls)
+```
+
+```{r}
+results <- data.frame(
+  actual          = ensemble10_test$PM2.5,
+  weighted_pred   = pred_weighted,
+  lm_pred         = pred_lm,
+  nnls_pred       = pred_nnls
+)
+
+results
+
+# assume y_new is the vector of true PM2.5 values
+metrics <- function(pred, y) {
+  c(
+    RMSE = sqrt(mean((pred - y)^2)),
+    MAE  = mean(abs(pred - y)),
+    R2   = 1 - sum((y - pred)^2) / sum((y - mean(y))^2)
+  )
+}
+
+results_tbl <- rbind(
+  Weighted = metrics(pred_weighted, ensemble10_test$PM2.5),
+  Linear   = metrics(pred_lm, ensemble10_test$PM2.5),
+  NNLS     = metrics(pred_nnls, ensemble10_test$PM2.5)
+)
+
+print(results_tbl)
+```
+
+```{r}
+names(as.data.frame(ensemble10_train[, ..maiac_predictors]))
+```
+
+## Make predictions on new locations
+```{r}
+veranda_era5_maiac <- data.table::fread("veranda_era5_maiac.csv")
+veranda_sentinel <- data.table::fread("veranda_era5_sentinel.csv")
+
+sentinel_predictors <- c("era5_2m_temperature", "era5_surface_pressure",  "era5_total_cloud_cover", "era5_boundary_layer_height", "era5_surface_solar_radiation_downwards", "era5_humidity", "era5_wind_speed", "era5_precipitation_type", "PM.x", "PM.y", "CO", "HCHO", "NO2", "O3","SO2", "CH4","AER_AI_340_380","CLOUD_FRACTION", "Month", "CLOUD_OPTICAL_THICKNESS", "CLOUD_BASE_HEIGHT", "Julian_Date", "Date")
+
+maiac_predictors <- c("Target_Lat", "Target_Lon", "AOT_055", "AOT_CWV", "AOT_IJH", "era5_2m_dewpoint_temp", "era5_2m_temperature", "era5_surface_pressure", "era5_boundary_layer_height", "era5_total_cloud_cover", "era5_hourly_average_precipitation", "era5_surface_net_solar_radiation_clear_sky", "era5_humidity", "era5_wind_speed", "era5_precipitation_type", "julian_day", "month", "year", "week_day_numeric")
+
+veranda_predictors_maiac <- veranda_era5_maiac[, ..maiac_predictors]
+veranda_predictors_sentinel <- veranda_sentinel[, ..sentinel_predictors]
+
+veranda_results_maiac <- veranda_era5_maiac$out.PM24
+veranda_results_sentinel <- veranda_sentinel$out.PM24
+```
+
+```{r}
+ggplot(veranda_era5_maiac, aes(x = out.PM24)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 40, fill = "grey80", color = "grey35") +
+  labs(title = "Distribution of PM2.5 (Veranda)",
+       x = "PM2.5 (µg/m³)", y = "Density") +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+veranda_predictions_maiac <- predict(xgb_rgs_fit, newdata = as.data.frame(veranda_predictors_maiac))
+
+sentinel_veranda_predictions <- predict(fit_sentinel_full, newdata = as.data.frame(veranda_predictors_sentinel))
+```
+
+```{r}
+veranda_preds <- data.frame(
+  lat = veranda_era5_maiac$Target_Lat,
+  lon = veranda_era5_maiac$Target_Lon,
+  out.PM24 = veranda_era5_maiac$out.PM24,
+  predicted = veranda_predictions_maiac,
+  date = veranda_era5_maiac$Date
+  )
+
+head(veranda_preds)
+
+fwrite(veranda_preds, "maiac_veranda_preds.csv")
+```
+
+
+```{r}
+# Get the R^2 for each model
+maiac_r2  <- caret::R2(veranda_predictions_maiac, veranda_results_maiac)
+sentinel_r2 <- caret::R2(sentinel_veranda_predictions, veranda_results_sentinel)
+
+caret::RMSE(veranda_predictions_maiac, veranda_results_maiac)
+
+maiac_r2
+sentinel_r2
+```
+
+```{r}
+length(veranda_predictions_maiac)
+length(sentinel_veranda_predictions)
+dim(veranda_era5_maiac)
+dim(veranda_sentinel)
+
+veranda_ensemble_pred <-
+  w_star * veranda_predictions_maiac +
+  (1 - w_star) * sentinel_veranda_predictions
+
+veranda_ensemble_pred_inv <-
+  w_star * veranda_predictions_maiac +
+  (1 - w_star) * sentinel_veranda_predictions
+```
+
+```{r}
+pred_lm2 <- predict(
+  meta_lm,
+  newdata = data.frame(
+    maiac_oof    = veranda_predictions_maiac,
+    sentinel_oof = sentinel_veranda_predictions
+  )
+)
+```
+
+```{r}
+library(data.table)
+
+# 0) Put everything into one table (predictors + actual + predicted)
+dt_clean <- veranda_era5_maiac[
+  , `:=`(
+    actual    = as.numeric(veranda_results_maiac),
+    predicted = as.numeric(veranda_ensemble_pred)
+  )
+]
+
+# 2) R-squared (two equivalent ways)
+SSE <- dt_clean[, sum((actual - predicted)^2)]
+SST <- dt_clean[, sum((actual - mean(actual))^2)]
+R2  <- 1 - SSE / SST
+
+# Correlation-based R^2 (same as above if model has an intercept)
+R2_cor <- cor(dt_clean$actual, dt_clean$predicted)^2
+
+R2
+R2_cor
+```
+
+```{r}
+dt_clean[, residual      := actual - predicted]
+dt_clean[, abs_residual  := abs(residual)]
+
+top10 <- dt_clean[order(abs_residual)][1:10]
+
+top10
+```
+
+```{r}
+fwrite(dt_clean, "ensemble_predictions.csv")
+```
+
+# Make predictions based on zilla
+```{r}
+veranda_era5_maiac_zilla1 <- veranda_era5_maiac[zilla == 1]
+veranda_era5_maiac_zilla2 <- veranda_era5_maiac[zilla == 2]
+
+veranda_sentinel_zilla1 <- veranda_sentinel[zilla == 1]
+veranda_sentinel_zilla2 <- veranda_sentinel[zilla == 2]
+```
+
+```{r}
+veranda_predictions_maiac_z1 <- predict(fit_maiac_full, newdata = as.data.frame(veranda_era5_maiac_zilla1[, ..maiac_predictors]))
+sentinel_veranda_predictions_z1 <- predict(fit_sentinel_full, newdata = as.data.frame(veranda_sentinel_zilla1[, ..sentinel_predictors]))
+
+veranda_predictions_maiac_z2 <- predict(fit_maiac_full, newdata = as.data.frame(veranda_era5_maiac_zilla2[, ..maiac_predictors]))
+sentinel_veranda_predictions_z2 <- predict(fit_sentinel_full, newdata = as.data.frame(veranda_sentinel_zilla2[, ..sentinel_predictors]))
+```
+
+```{r}
+maiac_r2_z1  <- caret::R2(veranda_predictions_maiac_z1, veranda_era5_maiac_zilla1$out.PM24)
+sentinel_r2_z1 <- caret::R2(sentinel_veranda_predictions_z1, veranda_sentinel_zilla1$out.PM24)
+
+maiac_r2_z1
+sentinel_r2_z1
+```
+
+```{r}
+maiac_r2_z2  <- caret::R2(veranda_predictions_maiac_z2, veranda_era5_maiac_zilla2$out.PM24)
+sentinel_r2_z2 <- caret::R2(sentinel_veranda_predictions_z2, veranda_sentinel_zilla2$out.PM24)
+
+maiac_r2_z2
+sentinel_r2_z2
+```
+
+```{r}
+pred_z1 <- predict(
+  meta_lm,
+  newdata = data.frame(
+    maiac_oof    = veranda_predictions_maiac_z1,
+    sentinel_oof = sentinel_veranda_predictions_z1
+  )
+)
+
+pred_z2 <- predict(
+  meta_lm,
+  newdata = data.frame(
+    maiac_oof    = veranda_predictions_maiac_z2,
+    sentinel_oof = sentinel_veranda_predictions_z2
+  )
+)
+```
+
+```{r}
+dt_clean_z1 <- veranda_era5_maiac_zilla1[
+  , `:=`(
+    actual    = as.numeric(veranda_era5_maiac_zilla1$out.PM24),
+    predicted = as.numeric(pred_z1)
+  )
+]
+
+# 2) R-squared (two equivalent ways)
+SSE <- dt_clean_z1[, sum((actual - predicted)^2)]
+SST <- dt_clean_z1[, sum((actual - mean(actual))^2)]
+R2  <- 1 - SSE / SST
+
+# Correlation-based R^2 (same as above if model has an intercept)
+R2_cor <- cor(dt_clean_z1$actual, dt_clean_z1$predicted)^2
+
+R2
+R2_cor
+```
+
+```{r}
+dt_clean_z2 <- veranda_era5_maiac_zilla2[
+  , `:=`(
+    actual    = as.numeric(veranda_era5_maiac_zilla2$out.PM24),
+    predicted = as.numeric(pred_z2)
+  )
+]
+
+# 2) R-squared (two equivalent ways)
+SSE <- dt_clean_z2[, sum((actual - predicted)^2)]
+SST <- dt_clean_z2[, sum((actual - mean(actual))^2)]
+R2  <- 1 - SSE / SST
+
+# Correlation-based R^2 (same as above if model has an intercept)
+R2_cor <- cor(dt_clean_z2$actual, dt_clean_z2$predicted)^2
+
+R2
+R2_cor
+```
+
+```{r}
+dt_clean_z2[, residual      := actual - predicted]
+dt_clean_z2[, abs_residual  := abs(residual)]
+
+top10 <- dt_clean_z2[order(-abs_residual)][1:10]
+
+top10
+```
+
+```{r}
+dt_clean_z1[, residual      := actual - predicted]
+dt_clean_z1[, abs_residual  := abs(residual)]
+
+top10 <- dt_clean_z1[order(-abs_residual)][1:10]
+
+top10
+```
+
+```{r}
+ggplot(dt_clean_z1, aes(x = actual, y = predicted)) +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(
+    title = "Predicted vs Actual Values",
+    x = "Actual",
+    y = "Predicted"
+  )
+
+ggplot(dt_clean_z2, aes(x = actual, y = predicted)) +
+  geom_point(alpha = 0.6, color = "steelblue") +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(
+    title = "Predicted vs Actual Values",
+    x = "Actual",
+    y = "Predicted"
+  )
+```
+
+```{r}
+summary(veranda_era5_maiac$out.PM24)
+summary(ensemble10_train$PM2.5)
+
+hist(
+  veranda_era5_maiac$out.PM24,
+  main = "Distribution of out.PM2.5",
+  xlab = "out.PM24",
+  col = "skyblue",
+  border = "white"
+)
+
+hist(
+  ensemble10_train$PM2.5,
+  main = "Distribution of PM2.5",
+  xlab = "PM2.5",
+  col = "skyblue",
+  border = "white"
+)
+
+hist(
+  dt_clean_z1$out.PM24,
+  main = "Distribution of out.PM2.5 (zilla1)",
+  xlab = "out.PM24",
+  col = "skyblue",
+  border = "white"
+)
+
+hist(
+  dt_clean_z2$out.PM24,
+  main = "Distribution of PM2.5 (zilla2)",
+  xlab = "PM2.5",
+  col = "skyblue",
+  border = "white"
+)
+```
+
+```{r}
+hist(
+  veranda_era5_maiac$era5_total_cloud_cover,
+  main = "Distribution of Total Cloud Cover (Veranda Data)",
+  xlab = "era5_total_cloud_cover",
+  col = "skyblue",
+  border = "white"
+)
+
+hist(
+  ensemble10_train$era5_total_cloud_cover,
+  main = "Distribution of Total Cloud Cover (Training Data)",
+  xlab = "era5_total_cloud_cover",
+  col = "skyblue",
+  border = "white"
+)
+```
+
+===============================================================================
+# Making Predictions All Locations Using New Data
+```{r}
+full_participants <- data.table::fread("full_participants_era5_maiac.csv")
+veranda_sentinel <- data.table::fread("veranda_era5_sentinel.csv")
+
+maiac_predictors <- c("Target_Lat", "Target_Lon", "AOT_055", "AOT_CWV", "AOT_IJH", "era5_2m_dewpoint_temp", "era5_2m_temperature", "era5_surface_pressure", "era5_boundary_layer_height", "era5_total_cloud_cover", "era5_hourly_average_precipitation", "era5_surface_net_solar_radiation_clear_sky", "era5_humidity", "era5_wind_speed", "era5_precipitation_type", "julian_day", "month", "year", "week_day_numeric")
+
+full_participants_predictors_maiac <- full_participants[, ..maiac_predictors]
+
+### No results exist
+dim(full_participants)
+head(full_participants)
+```
+
+```{r}
+full_predictions_maiac <- predict(xgb_rgs_fit, newdata = as.data.frame(full_participants_predictors_maiac))
+```
+
+```{r}
+# Make a 1 vs 1 line
+
+# assemble a clean data.frame
+df <- data.frame(
+  observed  = veranda_results_maiac,
+  predicted = veranda_predictions_maiac
+)
+
+# keep only finite pairs
+df <- df[is.finite(df$observed) & is.finite(df$predicted), ]
+
+# metrics
+fit  <- lm(predicted ~ observed, data = df)
+r2   <- summary(fit)$r.squared
+rmse <- sqrt(mean((df$predicted - df$observed)^2))
+mae  <- mean(abs(df$predicted - df$observed))
+
+# set common limits so the 1:1 line is square and visible
+rng  <- range(c(df$observed, df$predicted), na.rm = TRUE)
+```
+
+```{r}
+ggplot(df, aes(x = observed, y = predicted)) +
+  geom_point(alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 0.8) +
+  # 1:1 line
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  coord_equal(xlim = rng, ylim = rng, expand = FALSE) +
+  labs(
+    x = "Observed PM2.5",
+    y = "Predicted PM2.5",
+    title = "Observed vs Predicted PM2.5",
+    subtitle = sprintf("R² = %.3f, RMSE = %.2f, MAE = %.2f", r2, rmse, mae)
+  )
+```
+
+## Get ensembled predictions
+```{r}
+full_predictions_maiac2 <- full_participants[, pred_PM25_maiac := full_predictions_maiac]
+```
+
+```{r}
+setnames(full_predictions_maiac2, 
+         old = c("Target_Lat", "Target_Lon", "Date"),
+         new = c("Lat", "Lon", "date"))
+```
+
+```{r}
+relevant <- c("date", "Lat", "Lon", "pred_PM25_maiac")
+
+full_predictions_maiac2 <- full_predictions_maiac2[, ..relevant]
+```
+
+```{r}
+full_predictions_sentinel <- data.table::fread("sentinelparticipant_preds (1).csv")
+
+setnames(full_predictions_sentinel, 
+         old = c("Date", "PM.y", "PM.x", "PM2.5_pred"),
+         new = c("date", "Lat", "Lon", "pred_PM25_sentinel"))
+```
+
+```{r}
+dim(full_predictions_sentinel)
+dim(full_predictions_maiac2)
+```
+
+```{r}
+ensemble_prediction <- merge(
+  full_predictions_sentinel,
+  full_predictions_maiac2,
+  by  = c("date", "Lat", "Lon"),
+  all = TRUE
+)
+```
+
+```{r}
+head(ensemble_prediction)
+```
+
+```{r}
+ensemble_prediction[
+  , ensemble_prediction := 
+      0.9593 * pred_PM25_maiac + 0.1035 * pred_PM25_sentinel
+]
+```
+
+## Merge the predicted data back to original
+```{r}
+## Get the all participants data
+original_dt <- data.table::fread("cookstove-study-all-participants.csv")
+
+original_dt <- original_dt[date >= as.Date("2017-01-01")]
+```
+
+```{r}
+names(original_dt)
+```
+
+```{r}
+setDT(ensemble_prediction)
+ensemble_prediction[original_dt, on = .(Lat, Lon), `:=`(mid = i.mid, zilla = i.zilla)]
+
+setnames(ensemble_prediction, 
+         old = c("ensemble_prediction"),
+         new = c("predicted_PM25"))
+```
+
+```{r}
+relevant <- c("date", "Lat", "Lon", "predicted_PM25", "mid", "zilla")
+
+ensemble_prediction <- ensemble_prediction[, ..relevant]
+
+head(ensemble_prediction)
+```
+
+```{r}
+fwrite(ensemble_prediction, "full_participants_with_predictions.csv")
+```
+
+### Get summaries of predictions
+```{r}
+summary(ensemble_prediction$predicted_PM25)
+```
+
+```{r}
+ggplot(ensemble_prediction, aes(x = predicted_PM25)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 40, fill = "grey80", color = "grey35") +
+  labs(title = "Distribution of PM2.5",
+       x = "PM2.5 (µg/m³)", y = "Density") +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+set.seed(1)
+
+#Dsitribution for randomly selected participant
+locs <- unique(ensemble_prediction[, .(Lat, Lon)])
+rand_loc <- locs[sample(.N, 1)]
+ep_one_site <- ensemble_prediction[rand_loc, on = .(Lat, Lon)]
+rand_loc
+```
+
+```{r}
+ggplot(ep_one_site, aes(x = predicted_PM25)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 40, fill = "grey80", color = "grey35") +
+  labs(title = "Distribution of PM2.5 (lat = 25.79314, Lon = 88.93203)",
+       x = "PM2.5 (µg/m³)", y = "Density") +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+set.seed(20)
+#Dsitribution for randomly selected participant
+locs <- unique(ensemble_prediction[, .(Lat, Lon)])
+rand_loc <- locs[sample(.N, 1)]
+ep_one_site <- ensemble_prediction[rand_loc, on = .(Lat, Lon)]
+rand_loc
+
+ggplot(ep_one_site, aes(x = predicted_PM25)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 40, fill = "grey80", color = "grey35") +
+  labs(title = "Distribution of PM2.5",
+       x = "PM2.5 (µg/m³)", y = "Density") +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+zilla1 <- ensemble_prediction[zilla == 1]
+
+ggplot(zilla1, aes(x = predicted_PM25)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 40, fill = "grey80", color = "grey35") +
+  labs(title = "Distribution of PM2.5",
+       x = "PM2.5 (µg/m³)", y = "Density") +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+zilla2 <- ensemble_prediction[zilla == 2]
+
+ggplot(zilla2, aes(x = predicted_PM25)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 40, fill = "grey80", color = "grey35") +
+  labs(title = "Distribution of PM2.5",
+       x = "PM2.5 (µg/m³)", y = "Density") +
+  theme_minimal(base_size = 13)
+```
+

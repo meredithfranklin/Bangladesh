@@ -1,0 +1,503 @@
+---
+title: "maiac_data_merge"
+output: html_document
+date: "2025-06-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+library(reticulate)
+library(ggplot2)
+library(gt)
+library(mgcv)
+library(dtplyr)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(broom)
+library(tidytext)
+library(tm)
+library(reshape2)
+library(tidyverse)
+library(topicmodels)
+library(sf)
+library(caret)
+```
+
+# Download the maiac_data
+```{r}
+maiac_data <- data.table::fread("../../PycharmProjects/BangladeshProject/maiac/filtered_aot_data_updated3.csv")
+
+head(maiac_data)
+```
+
+```{r}
+maiac_data[Date == as.IDate("2017-01-01")]
+```
+
+
+# Check details on the maiac data
+```{r}
+dim(maiac_data)
+```
+
+```{r}
+na_counts <- colSums(is.na(maiac_data))
+na_counts
+```
+
+```{r}
+# or both at once
+range(maiac_data$Date, na.rm = TRUE)
+```
+
+```{r}
+unique(maiac_data$Tile)
+```
+
+```{r}
+library(corrplot)
+library(ggcorrplot)
+
+cor_data <- maiac_data[, .(AOT_047, AOT_055, AOT_Unc, AOT_CWV, AOT_QA, AOT_FMF, AOT_IJH)]
+
+# Compute correlation matrix
+cor_matrix <- cor(cor_data,
+                  use = "pairwise.complete.obs")   
+
+ggcorrplot(cor_matrix, 
+           method = "square", 
+           type = "lower", 
+           lab = TRUE, 
+           outline.col = "white", 
+           colors = c("blue", "white", "red")) + 
+  ggtitle("Correlation Matrix between MAIAC AOT variables")
+```
+
+```{r}
+summary(maiac_data$AOT_047)
+summary(maiac_data$AOT_055)
+summary(maiac_data$AOT_Unc)
+```
+
+```{r}
+summary(maiac_data$AOT_CWV)
+summary(maiac_data$AOT_QA)
+summary(maiac_data$AOT_FMF)
+summary(maiac_data$AOT_IJH)
+```
+
+```{r}
+# Check the values for AOT_FMF
+unique(maiac_data$AOT_FMF)
+```
+
+```{r}
+#Check how correlated AOT_047 and AOT_055 is
+plot_df <- maiac_data[!is.na(AOT_047) & !is.na(AOT_055),
+                      .(AOT_047, AOT_055)]
+
+ggplot(plot_df, aes(x = AOT_047, y = AOT_055)) +
+  geom_point(alpha = 0.5) +                 # raw dots (30 % opaque)
+  geom_smooth(method = "lm", se = TRUE,     # OLS fit + confidence ribbon
+              colour = "red", linewidth = 1) +
+  labs(title = "AOT_047 vs AOT_055",
+       x = "AOT_047",
+       y = "AOT_055") +
+  theme_minimal()
+```
+
+# remove unnecessary columns
+```{r}
+cols_to_remove <- c("Filename", "Tile", "AOT_047", "AngstromExp_470_780", "AOT_FMF", "AOT_QA", "AOT_Unc")
+maiac_data[ , (cols_to_remove) := NULL]
+```
+- AOT_047 because it is highly correlated with AOT_055
+- AngstromExp_470_780 because they are all NA
+- AOT_FMF because they are either 8 or -999999
+- AOT_QA and AOT_Unc because they are not meaningful information
+
+```{r}
+# Ensure that the columns were removed
+names(maiac_data)
+```
+
+# Divide the columns by 1000
+```{r}
+maiac_data$AOT_055 <- maiac_data$AOT_055 / 1000
+maiac_data$AOT_CWV <- maiac_data$AOT_CWV / 1000
+maiac_data$AOT_IJH <- maiac_data$AOT_IJH / 1000
+```
+
+```{r}
+# check summary to ensure that they are divided by 1000 now (summary rounds decimal places to the tenth)
+summary(maiac_data$AOT_055)
+summary(maiac_data$AOT_CWV)
+summary(maiac_data$AOT_IJH)
+```
+
+# Take average of the maiac data
+```{r}
+# Drop Pixel_Lat and Pixel_Lon
+maiac_data[, c("Pixel_Lat", "Pixel_Lon") := NULL]
+
+# Group by Date, Target_Lat, Target_Lon
+maiac_avg <- maiac_data[, lapply(.SD, function(x) mean(x, na.rm = TRUE)), 
+                        by = .(Date, Target_Lat, Target_Lon)]
+
+
+```
+
+```{r}
+maiac_avg[, names(maiac_avg) := lapply(.SD, function(x) {
+  if (is.numeric(x)) x[is.nan(x)] <- NA
+  x
+})]
+
+head(maiac_avg)
+```
+
+```{r}
+# get dimension
+dim(maiac_avg)
+# Check NA
+na_counts <- colSums(is.na(maiac_avg))
+na_counts
+```
+
+
+# Check variables in pm2.5 for correlation
+```{r}
+# Load the dataset
+era5_pm2.5 <- data.table::fread("era5_pm2.5_merged.csv")
+
+# Rename columns for merging
+setnames(era5_pm2.5, 
+         old = c("latitude", "longitude", "date"),
+         new = c("Target_Lat", "Target_Lon", "Date"))
+```
+
+```{r}
+# Filter data so we only have data from 2017-01-01 to 2022-12-31
+era5_pm2.5 <- era5_pm2.5[Date >= as.IDate("2017-01-01")]
+era5_pm2.5 <- era5_pm2.5[Date <= as.IDate("2022-12-31")]
+
+head(era5_pm2.5)
+tail(era5_pm2.5)
+```
+
+```{r}
+library(magrittr)
+
+# No pm2.5 variables will be included
+num_cols <- c(
+  "era5_2m_dewpoint_temp", "era5_2m_temperature", "era5_surface_pressure",
+  "era5_boundary_layer_height", "era5_instantaneous_10m_wind_gust",
+  "era5_total_cloud_cover", "era5_hourly_average_precipitation",
+  "era5_surface_net_solar_radiation_clear_sky", "era5_surface_solar_radiation_downwards",
+  "era5_humidity", "era5_wind_speed", "era5_precipitation_type"
+)
+
+num_cols <- intersect(num_cols, names(era5_pm2.5))
+num_cols <- num_cols[sapply(era5_pm2.5[, ..num_cols], is.numeric)]
+
+cor_mat  <- cor(era5_pm2.5[, ..num_cols], use = "pairwise.complete.obs")
+
+cor_long <- as.data.table(as.table(cor_mat))           # V1 V2 N
+setnames(cor_long, c("Var1", "Var2", "r"))             # nicer names
+
+cor_long <- cor_long[Var1 < Var2                      # each pair once
+                   ][, abs_r := abs(r)]               # |r|
+
+
+## ── 3.  view highly correlated pairs (> |r| = .70 here) ───────────────────
+high_corr <- cor_long[abs_r > .70][order(-abs_r)]
+print(high_corr)
+```
+
+
+```{r}
+#cols_to_remove2 <- c("pm2.5_daily_total_rainfall", "era5_instantaneous_10m_wind_gust", "era5_surface_solar_radiation_downwards", "era5_2m_dewpoint_temp")
+pm2.5_var <- c( "pm2.5_wind_spd", "pm2.5_wind_dir", "pm2.5_avg_temp", "pm2.5_avg_hum",
+  "pm2.5_rainfall_per_hour", "pm2.5_daily_total_rainfall",
+  "SO2_land", "NO_land", "NO2_land", "CO_land", "O3_land")
+cols_to_remove2 <- c("pm2.5_rainfall_per_hour", "era5_instantaneous_10m_wind_gust", "era5_surface_solar_radiation_downwards", pm2.5_var)
+```
+
+# Divide surface_pressure by 1000
+- To make sure units are in pascals
+```{r}
+summary(era5_pm2.5$era5_surface_pressure)
+
+# Divide by 1000
+era5_pm2.5$era5_surface_pressure <- era5_pm2.5$era5_surface_pressure / 1000
+
+# Check summary to see if it has been divided by 1000
+summary(era5_pm2.5$era5_surface_pressure)
+```
+
+# Merge with the pm2.5 data
+```{r}
+# Check the range of dates are same
+range(maiac_avg$Date)
+range(era5_pm2.5$Date)
+```
+
+```{r}
+dim(maiac_avg)
+dim(era5_pm2.5)
+```
+
+```{r}
+merged_data <- merge(
+  maiac_avg,
+  era5_pm2.5,
+  by  = c("Target_Lat", "Target_Lon", "Date"),
+  all = TRUE
+)
+
+head(merged_data)
+```
+
+```{r}
+# Sanity check date range
+range(merged_data$Date)
+```
+
+```{r}
+# Sanity check variable names
+names(merged_data)
+```
+
+# Adding the relevant Date columns
+```{r}
+# Add Julian Date
+library(lubridate)
+
+merged_data$julian_day <- as.numeric(merged_data$Date)
+```
+
+```{r}
+# Add day of the week
+merged_data$day_of_week <- wday(merged_data$Date, label = TRUE, abbr = FALSE)
+```
+
+```{r}
+# Add year and month
+merged_data <- merged_data %>% mutate(month = month(Date), year = year(Date))
+```
+
+```{r}
+# check the new date columns has been added
+head(merged_data)
+```
+
+# Setting up for xgboost
+
+```{r}
+# Remove rows that has NA for PM2.5 (the target)
+merged_data  <- copy(merged_data)[!is.na(PM2.5)]
+```
+
+```{r, eval = FALSE}
+# Remove outliers the 99th percentile
+percentile_99th <- quantile(merged_data$PM2.5, 0.99, na.rm = TRUE)
+
+outliers <- merged_data[merged_data$PM2.5 > percentile_99th, ]
+
+dim(outliers)
+```
+
+```{r}
+# Remove the really high value (above 800)
+merged_data <- merged_data[merged_data$PM2.5 <= 800]
+
+dim(merged_data)
+summary(merged_data$PM2.5)
+```
+
+```{r}
+# look at the histogram
+hist(merged_data$PM2.5,
+     breaks = 50,
+     main = "Histogram of PM2.5",
+     xlab = "PM2.5",
+     col = "skyblue",
+     border = "white")
+
+```
+
+```{r}
+fwrite(merged_data, "cleanedPM2.5_for_xgboost.csv")
+```
+
+```{r}
+# Prepare datasets for leave one site out
+one_site_out_test <- merged_data[site_id == 1]
+
+one_site_out_train <- setdiff(merged_data, one_site_out_test)
+```
+
+```{r}
+head(one_site_out_train)
+```
+
+```{r}
+fwrite(one_site_out_test, "one_site_out_test.csv")
+fwrite(one_site_out_train, "one_site_out_train.csv")
+```
+
+```{r}
+cols_not_include <- c(cols_to_remove2, "PM2.5", "Date", "site_id", "city")
+
+pred_names <- setdiff(names(one_site_out_train), cols_not_include)
+predictors <- as.data.frame(one_site_out_train[, ..pred_names])
+
+target <- one_site_out_train$PM2.5
+```
+
+```{r, eval = FALSE}
+# Remove columns that we don't need for predictors
+cols_not_include <- c(cols_to_remove2, "PM2.5", "Date", "site_id", "city")
+
+# Set up predictors and target
+pred_names <- setdiff(names(merged_data), cols_not_include)
+predictors <- as.data.frame(merged_data[, ..pred_names])
+
+target <- merged_data$PM2.5
+```
+
+```{r}
+#Sanity check to make sure there are no unwanted predictors
+names(predictors)
+```
+
+# Finding the best nrounds parameter
+# Performing xgboost
+```{r, eval = FALSE}
+# Create a grid to tune the parameters
+tune_grid <- expand.grid(
+  nrounds = 100, 
+  eta = seq(0.1, 0.5, length.out = 5),
+  max_depth = 4:6,
+  min_child_weight = 4:7, # was 2:7 before
+  colsample_bytree = seq(0.5, 1, length.out = 3),
+  subsample = seq(0.8, 1, length.out = 3),
+  gamma = 0 #default
+)
+
+# lambda = 1, alpha = 0 are default values
+```
+
+Creating a grid, whose size of the subspace is half the size of the total parameter space
+```{r}
+full_grid <- expand.grid(
+  nrounds = 100, 
+  eta = seq(0.05, 0.25, by = 0.05),
+  max_depth = seq(2, 20, 2),
+  min_child_weight = seq(0, 30, 2), 
+  colsample_bytree = seq(0.1, 1, by = 0.2),
+  subsample = seq(0.1, 1, by = 0.2),
+  gamma = 0 #default
+)
+
+n_total <- nrow(full_grid)
+
+prop      <- 0.5
+pick_rows <- sample(seq_len(n_total),
+                    size = ceiling(prop * n_total),
+                    replace = FALSE)
+rgs_grid  <- full_grid[pick_rows, ]
+```
+
+```{r}
+test_full_grid <- expand.grid(
+  nrounds = 100, 
+  eta = seq(0.05, 0.25, by = 0.05),
+  max_depth = 6:10,
+  min_child_weight = 6:10,
+  colsample_bytree = seq(0.1, 1, by = 0.2),
+  subsample = seq(0.1, 1, by = 0.2),
+  gamma = 0 #default
+)
+
+n_total <- nrow(test_full_grid)
+
+prop      <- 0.5
+pick_rows <- sample(seq_len(n_total),
+                    size = ceiling(prop * n_total),
+                    replace = FALSE)
+rgs_grid  <- test_full_grid[pick_rows, ]
+```
+
+```{r}
+ctrl <- trainControl(
+  method      = "cv",
+  number      = 5,
+  verboseIter = FALSE,
+  allowParallel = TRUE
+)
+```
+
+```{r}
+xgb_rgs <- train(
+  x          = predictors,
+  y          = target,
+  method     = "xgbTree",
+  tuneGrid   = rgs_grid,
+  trControl  = ctrl,
+  metric     = "RMSE"
+)
+```
+
+```{r, eval = FALSE}
+# Running the model using cross-validation
+tune_grid <- expand.grid(
+  nrounds = 100, 
+  eta = seq(0.1, 0.5, length.out = 5),
+  max_depth = 1:5,
+  min_child_weight = 5, # was 2:7 before
+  colsample_bytree = 0.5,
+  subsample = 0.5,
+  gamma = 0 #default
+)
+
+
+# Set up training control
+train_control <- trainControl(
+  method = "cv",        # cross-validation
+  number = 5,           # 5-fold CV
+  verboseIter = TRUE,   # Show training progress
+  allowParallel = TRUE  # Enable parallel processing if supported
+)
+
+set.seed(123)
+
+xgb_model <- train(
+  x = predictors,
+  y = target,
+  method = "xgbTree",
+  trControl = train_control,
+  tuneGrid = tune_grid,
+  metric = "RMSE",
+)
+```
+
+```{r}
+best_hp <- xgb_rgs$bestTune
+print(best_hp)
+
+# 2. CV performance for *that* combo (RMSE, R², MAE, etc.)
+best_perf <- dplyr::right_join(xgb_rgs$results, best_hp,
+                               by = intersect(names(xgb_rgs$results),
+                                              names(best_hp)))
+print(best_perf[, c("RMSE", "Rsquared", "MAE")])
+```
+
+Data splitting methods
+- Leave one site out checking
+- Random 10-fold validation
+- (Temporal 10-fold will be done later)

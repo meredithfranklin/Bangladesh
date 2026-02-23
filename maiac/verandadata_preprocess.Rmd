@@ -1,0 +1,731 @@
+---
+title: "data_extraction_clean"
+output: html_document
+date: "2025-10-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(reticulate)
+library(ggplot2)
+library(gt)
+library(mgcv)
+library(dtplyr)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(broom)
+library(tidytext)
+library(wordcloud2)
+library(tm)
+library(reshape2)
+library(tidyverse)
+library(topicmodels)
+library(raster)
+```
+
+# For veranda file
+
+## Download the datasets
+```{r}
+# Get the new dataset to make predictions for
+new_locations_dt <- data.table::fread("cookstove-study-veranda-pm25.csv")
+
+new_locations_dt <- unique(new_locations_dt)
+
+era5_daily_data <- data.table::fread("era5_daily_avg.csv")
+
+names(new_locations_dt)
+names(era5_daily_data)
+```
+
+```{r}
+relevant_cols<- c("depdate", "Latitude", "Longitude", "out.PM24", "zilla")
+filtered_new_locations_dt <- new_locations_dt[, ..relevant_cols]
+
+setnames(filtered_new_locations_dt, 
+         old = c("depdate", "Latitude", "Longitude"),
+         new = c("date", "latitude", "longitude"))
+
+filtered_new_locations_dt$date <- as.Date(filtered_new_locations_dt$date)
+```
+
+## Merge the datasets together the same way we did to merge the site information
+```{r}
+# Add id to each row for tracking
+filtered_new_locations_dt[, location_id := .I]
+
+# Round each latitude/longitude pair
+head(filtered_new_locations_dt)
+```
+
+```{r}
+locations_sf  <- st_as_sf(filtered_new_locations_dt,
+                      coords = c("longitude", "latitude"),
+                      crs = 4326)
+
+location_buff <- locations_sf |>
+  st_transform(32646) |>
+  st_buffer(dist = 30000)         # 30 km
+
+location_buff$location_id <- filtered_new_locations_dt$location_id
+location_buff$date   <- filtered_new_locations_dt$date
+
+
+## 2 ── one-time lookup: which ERA5 grid cell falls in which buffer ───────
+grid_coords <- unique(era5_daily_data[, .(longitude, latitude)])
+grid_sf <- st_as_sf(grid_coords, coords = c("longitude", "latitude"),
+                    crs = 4326) |>
+           st_transform(32646)
+
+hit_list <- st_intersects(grid_sf, location_buff)
+
+grid2location <- data.table(
+  grid_id = rep(seq_along(hit_list), lengths(hit_list)),
+  location_id = unlist(hit_list)
+)
+
+## 3 ── attach lon/lat once for convenience
+grid2location <- grid2location[
+  , cbind(.SD, grid_coords[grid_id, ]),
+  .SDcols = c("grid_id", "location_id")
+]
+
+head(filtered_new_locations_dt)
+
+grid2location <- merge(
+  grid2location,
+  filtered_new_locations_dt[, .(location_id, date, loc_lon = longitude, loc_lat = latitude, out.PM24, zilla)],
+  by = "location_id",
+  all.x = TRUE
+)
+
+head(grid2location)
+```
+
+```{r}
+daily_with_location <- merge(
+  era5_daily_data, grid2location,
+  by = c("date","longitude","latitude"),
+  allow.cartesian = TRUE
+)
+
+all_value_cols <- setdiff(names(era5_daily_data), c("longitude","latitude","date"))
+binary_col <- "Precipitation type"
+mean_cols <- setdiff(all_value_cols, binary_col)
+
+# Helper: mode for a binary vector (ties → 0)
+mode_binary <- \(x) {
+  if (all(is.na(x)))        return(NA_real_)
+  if (mean(x, na.rm = TRUE) > 0.5) 1 else 0
+}
+
+location_data_daily <- daily_with_location[ ,
+  {
+    # means for continuous ERA5 variables
+    means_list <- lapply(.SD, \(x) mean(x, na.rm = TRUE))
+
+    # pass-through: zilla and out.PM24 are per location_id/date; take the unique/first
+    zill <- {u <- unique(na.omit(zilla)); if (length(u)) u[1] else NA}
+    pm24 <- {u <- unique(na.omit(out.PM24)); if (length(u)) u[1] else NA_real_}
+
+    c(
+      means_list,
+      list(
+        `Precipitation type` = mode_binary(`Precipitation type`),
+        zilla = zill,
+        out.PM24 = pm24
+      )
+    )
+  },
+  by = .(location_id, date, loc_lon, loc_lat),
+  .SDcols = mean_cols
+]
+
+location_data_daily[, location_id := NULL]
+```
+
+```{r}
+head(location_data_daily)
+range(location_data_daily$date)
+range(filtered_new_locations_dt$date)
+dim(location_data_daily)
+dim(filtered_new_locations_dt)
+```
+
+```{r}
+# Get all the latitude and longitude pairs in location_data_daily to get the target latitude/longitude.
+coordinates <- c("loc_lon", "loc_lat")
+target_coordinates <- location_data_daily[, ..coordinates]
+target_coordinates <- unique(target_coordinates)
+
+setnames(target_coordinates, old = c("loc_lon", "loc_lat"),
+         new = c("Longitude", "Latitude"))
+
+head(target_coordinates)
+
+fwrite(target_coordinates, "participant_target_coordinates.csv")
+```
+
+```{r}
+setnames(location_data_daily, 
+         old = c("loc_lon", "loc_lat", "date", "2m dewpoint temp", "2m temperature", "Surface Pressure", 
+                 "Instantaneous 10m wind gust", "Total cloud cover", "Precipitation type", "Boundary layer height", 
+                 "total_precipitation", "Surface net solar radiation, clear sky", "Surface solar radiation downwards", "humidity", "wind_speed"),
+         new = c("Target_Lon", "Target_Lat", "Date", "era5_2m_dewpoint_temp", "era5_2m_temperature", "era5_surface_pressure", 
+                 "era5_instantaneous_10m_wind_gust", "era5_total_cloud_cover", "era5_precipitation_type", "era5_boundary_layer_height", 
+                 "era5_hourly_average_precipitation", "era5_surface_net_solar_radiation_clear_sky", "era5_surface_solar_radiation_downwards", "era5_humidity",
+                 "era5_wind_speed"))
+```
+
+```{r}
+# divide surface pressure by 1000
+location_data_daily$era5_surface_pressure <- location_data_daily$era5_surface_pressure / 1000
+summary(location_data_daily$era5_surface_pressure)
+```
+
+```{r}
+fwrite(location_data_daily, "veranda_era5.csv")
+```
+
+```{r}
+location_data_daily[, lapply(.SD, function(x) sum(is.na(x)))]
+```
+
+# Process the maiac data
+```{r}
+maiac_data <- data.table::fread("../../PycharmProjects/BangladeshProject/maiac/veranda_maiac.csv")
+```
+
+```{r}
+head(maiac_data)
+range(maiac_data$Date)
+```
+
+```{r}
+# Remove columns we don't need
+
+cols_to_remove <- c("Filename", "Tile", "AOT_047", "AngstromExp_470_780", "AOT_FMF", "AOT_QA", "AOT_Unc")
+maiac_data[ , (cols_to_remove) := NULL]
+```
+
+```{r}
+# Make sure the date range matches between the two datasets.
+maiac_data <- maiac_data[Date <= as.Date("2018-12-25")]
+
+# Sanity check
+range(location_data_daily$Date)
+range(maiac_data$Date)
+```
+
+```{r}
+# divide maiac_data by 1000
+maiac_data$AOT_055 <- maiac_data$AOT_055 / 1000
+maiac_data$AOT_CWV <- maiac_data$AOT_CWV / 1000
+maiac_data$AOT_IJH <- maiac_data$AOT_IJH / 1000
+```
+
+```{r}
+dim(maiac_data)
+```
+
+```{r}
+# Take average of the points
+
+# Drop Pixel_Lat and Pixel_Lon
+maiac_data[, c("Pixel_Lat", "Pixel_Lon") := NULL]
+
+# Group by Date, Target_Lat, Target_Lon
+maiac_avg <- maiac_data[, lapply(.SD, function(x) mean(x, na.rm = TRUE)), 
+                        by = .(Date, Target_Lat, Target_Lon)]
+
+maiac_avg[, names(maiac_avg) := lapply(.SD, function(x) {
+  if (is.numeric(x)) x[is.nan(x)] <- NA
+  x
+})]
+```
+
+```{r}
+dim(maiac_avg)
+# Check NA
+na_counts <- colSums(is.na(maiac_avg))
+na_counts
+```
+
+```{r}
+head(maiac_avg)
+```
+
+# Merge with maiac_data
+```{r}
+merged_data <- merge(
+  maiac_avg,
+  location_data_daily,
+  by  = c("Target_Lat", "Target_Lon", "Date"),
+  all = FALSE 
+)
+
+head(merged_data)
+```
+
+```{r}
+# Check the date range
+range(merged_data$Date)
+range(location_data_daily$Date)
+dim(merged_data)
+dim(location_data_daily)
+```
+
+# Adding the relevant Date columns
+```{r}
+# Add Julian Date
+library(lubridate)
+
+merged_data$julian_day <- as.numeric(merged_data$Date)
+```
+
+```{r}
+# Add day of the week
+merged_data$day_of_week <- wday(merged_data$Date, label = TRUE, abbr = FALSE)
+```
+
+```{r}
+# Add year and month
+merged_data <- merged_data %>% mutate(month = month(Date), year = year(Date))
+```
+
+```{r}
+# Modify the date of the week to a numeric column to add it in as a predictor
+merged_data$week_day_numeric <- wday(merged_data$Date)
+
+head(merged_data)
+```
+
+# Setup data so it can be used to make predictions
+```{r}
+names(merged_data)
+```
+
+```{r}
+setnames(filtered_new_locations_dt, 
+         old = c("date", "latitude", "longitude"),
+         new = c("Date", "Target_Lat", "Target_Lon"))
+```
+
+```{r}
+fwrite(merged_data, "veranda_era5_maiac.csv")
+```
+
+```{r}
+dim(merged_data)
+```
+
+# Setup Sentinel Data
+```{r}
+veranda_era5_sentinel <- data.table::fread("vs4.csv")
+
+names(veranda_era5_sentinel)
+```
+
+```{r}
+setnames(veranda_era5_sentinel, 
+         old = c("vLon", "vLat"),
+         new = c("Target_Lon", "Target_Lat"))
+
+merged_data_sentinel <- merge(
+  veranda_era5_sentinel,
+  merged_data,
+  by  = c("Target_Lat", "Target_Lon", "Date"),
+  all.x = TRUE 
+)
+```
+
+```{r}
+setnames(merged_data_sentinel, 
+         old = c("Target_Lon", "Target_Lat"),
+         new = c("PM.x", "PM.y"))
+
+merged_data_sentinel$Julian_Date <- as.numeric(merged_data_sentinel$Date)
+
+merged_data_sentinel <- merged_data_sentinel %>% mutate(Month = month(Date))
+
+names(merged_data_sentinel)
+```
+
+```{r}
+fwrite(merged_data_sentinel, "veranda_era5_sentinel.csv")
+```
+
+```{r}
+head(location_data_daily)
+head(filtered_new_locations_dt)
+```
+
+```{r}
+head(veranda_era5_sentinel)
+```
+
+=================================================================================
+# Extracting full data
+
+```{r}
+# Get the new dataset to make predictions for
+new_locations_dt <- data.table::fread("cookstove-study-all-participants.csv")
+
+era5_daily_data <- data.table::fread("era5_daily_avg.csv")
+```
+
+```{r}
+new_locations_dt <- new_locations_dt[date >= as.IDate("2017-01-01")]
+
+range(new_locations_dt$date)
+```
+
+```{r}
+# Extend the dataset to daily data & Remove columns we don't need
+
+site_pairs <- unique(new_locations_dt[, .(Lat, Lon)])
+
+# build daily dates for each (Lat, Lon) from 2017-01-01 to 2018-12-31
+daily_dt <- site_pairs[
+  , .(date = seq(as.IDate("2017-01-01"), as.IDate("2018-12-31"), by = "day")),
+  by = .(Lat, Lon)
+]
+
+# keep only the requested columns and order them
+filtered_new_locations_dt <- daily_dt[, .(date, Lat, Lon)][order(Lat, Lon, date)]
+```
+
+```{r}
+relevant_cols<- c("date", "Lat", "Lon")
+filtered_new_locations_dt <- filtered_new_locations_dt[, ..relevant_cols]
+
+setnames(filtered_new_locations_dt, 
+         old = c("Lat", "Lon"),
+         new = c("latitude", "longitude"))
+```
+
+```{r}
+# Check that there are daily data now
+head(filtered_new_locations_dt)
+```
+
+```{r}
+# Add id to each row for tracking
+filtered_new_locations_dt[, location_id := .I]
+
+# Round each latitude/longitude pair
+head(filtered_new_locations_dt)
+```
+
+```{r}
+locations_sf  <- st_as_sf(filtered_new_locations_dt,
+                      coords = c("longitude", "latitude"),
+                      crs = 4326)
+
+location_buff <- locations_sf |>
+  st_transform(32646) |>
+  st_buffer(dist = 30000)         # 30 km
+
+location_buff$location_id <- filtered_new_locations_dt$location_id
+location_buff$date   <- filtered_new_locations_dt$date
+
+
+## 2 ── one-time lookup: which ERA5 grid cell falls in which buffer ───────
+grid_coords <- unique(era5_daily_data[, .(longitude, latitude)])
+grid_sf <- st_as_sf(grid_coords, coords = c("longitude", "latitude"),
+                    crs = 4326) |>
+           st_transform(32646)
+
+hit_list <- st_intersects(grid_sf, location_buff)
+
+grid2location <- data.table(
+  grid_id = rep(seq_along(hit_list), lengths(hit_list)),
+  location_id = unlist(hit_list)
+)
+
+## 3 ── attach lon/lat once for convenience
+grid2location <- grid2location[
+  , cbind(.SD, grid_coords[grid_id, ]),
+  .SDcols = c("grid_id", "location_id")
+]
+
+head(filtered_new_locations_dt)
+
+grid2location <- merge(
+  grid2location,
+  filtered_new_locations_dt[, .(location_id, date, loc_lon = longitude, loc_lat = latitude)],
+  by = "location_id",
+  all.x = TRUE
+)
+
+head(grid2location)
+```
+
+```{r}
+daily_with_location <- merge(
+  era5_daily_data, grid2location,
+  by = c("date","longitude","latitude"),
+  allow.cartesian = TRUE
+)
+
+all_value_cols <- setdiff(names(era5_daily_data), c("longitude","latitude","date"))
+binary_col <- "Precipitation type"
+mean_cols <- setdiff(all_value_cols, binary_col)
+
+# Helper: mode for a binary vector (ties → 0)
+mode_binary <- \(x) {
+  if (all(is.na(x)))        return(NA_real_)
+  if (mean(x, na.rm = TRUE) > 0.5) 1 else 0
+}
+
+location_data_daily <- daily_with_location[ ,
+  {
+    # means for continuous ERA5 variables
+    means_list <- lapply(.SD, \(x) mean(x, na.rm = TRUE))
+
+    c(
+      means_list,
+      list(
+        `Precipitation type` = mode_binary(`Precipitation type`)
+      )
+    )
+  },
+  by = .(location_id, date, loc_lon, loc_lat),
+  .SDcols = mean_cols
+]
+
+location_data_daily[, location_id := NULL]
+```
+
+```{r}
+# Get all the latitude and longitude pairs in location_data_daily to get the target latitude/longitude.
+coordinates <- c("loc_lon", "loc_lat")
+target_coordinates <- location_data_daily[, ..coordinates]
+target_coordinates <- unique(target_coordinates)
+
+setnames(target_coordinates, old = c("loc_lon", "loc_lat"),
+         new = c("Longitude", "Latitude"))
+
+head(target_coordinates)
+
+fwrite(target_coordinates, "full_participant_target_coordinates.csv")
+```
+
+```{r}
+setnames(location_data_daily, 
+         old = c("loc_lon", "loc_lat", "date", "2m dewpoint temp", "2m temperature", "Surface Pressure", 
+                 "Instantaneous 10m wind gust", "Total cloud cover", "Precipitation type", "Boundary layer height", 
+                 "total_precipitation", "Surface net solar radiation, clear sky", "Surface solar radiation downwards", "humidity", "wind_speed"),
+         new = c("Target_Lon", "Target_Lat", "Date", "era5_2m_dewpoint_temp", "era5_2m_temperature", "era5_surface_pressure", 
+                 "era5_instantaneous_10m_wind_gust", "era5_total_cloud_cover", "era5_precipitation_type", "era5_boundary_layer_height", 
+                 "era5_hourly_average_precipitation", "era5_surface_net_solar_radiation_clear_sky", "era5_surface_solar_radiation_downwards", "era5_humidity",
+                 "era5_wind_speed"))
+```
+
+```{r}
+# divide surface pressure by 1000
+location_data_daily$era5_surface_pressure <- location_data_daily$era5_surface_pressure / 1000
+summary(location_data_daily$era5_surface_pressure)
+```
+
+```{r}
+# Save if you need the era5 data
+
+fwrite(location_data_daily, "fulldata_era5.csv")
+```
+
+```{r}
+# Check number of NA (should be zero)
+location_data_daily[, lapply(.SD, function(x) sum(is.na(x)))]
+```
+
+```{r}
+# Check the range of the date for era5 data
+range(location_data_daily$Date)
+```
+
+## Process the maiac data
+```{r}
+maiac_data <- data.table::fread("../../PycharmProjects/BangladeshProject/maiac/full_participants_maiac.csv")
+```
+
+```{r}
+head(maiac_data)
+range(maiac_data$Date)
+```
+
+```{r}
+# Remove columns we don't need
+
+cols_to_remove <- c("Filename", "Tile", "AOT_047", "AngstromExp_470_780", "AOT_FMF", "AOT_QA", "AOT_Unc")
+maiac_data[ , (cols_to_remove) := NULL]
+```
+
+### Plot for data availability
+```{r}
+dt <- as.data.table(maiac_data)
+
+dt[, Date := as.IDate(Date)]
+
+dt[, Month := as.IDate(format(Date, "%Y-%m-01"))]
+
+vars <- c("AOT_055", "AOT_CWV", "AOT_IJH")
+
+long <- data.table::melt(
+  dt,
+  id.vars     = c("Date","Month"),
+  measure.vars = vars,
+  variable.name = "Product",
+  value.name    = "value"
+)
+
+avail <- long[
+  , .(
+    n_records     = .N,
+    n_non_missing = sum(!is.na(value)),
+    pct_available = 100 * sum(!is.na(value)) / .N
+  ),
+  by = .(Month, Product)
+]
+```
+
+```{r}
+p_counts <- ggplot(avail, aes(x = Month, y = n_non_missing, fill = Product)) +
+  geom_col(position = "dodge") +
+  scale_x_date(date_breaks = "1 month", date_labels = "%Y-%m", expand = c(0.01, 0.01)) +
+  labs(
+    title = "Monthly Data Availability",
+    x = "Month",
+    y = "Non-missing observations"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.minor = element_blank())
+
+p_counts
+```
+
+
+```{r}
+# Make sure the date range matches between the two datasets.
+maiac_data <- maiac_data[Date <= as.Date("2018-12-31")]
+
+# Sanity check
+range(location_data_daily$Date)
+range(maiac_data$Date)
+```
+
+```{r}
+# divide maiac_data by 1000
+maiac_data$AOT_055 <- maiac_data$AOT_055 / 1000
+maiac_data$AOT_CWV <- maiac_data$AOT_CWV / 1000
+maiac_data$AOT_IJH <- maiac_data$AOT_IJH / 1000
+```
+
+```{r}
+dim(maiac_data)
+```
+
+```{r}
+# Take average of the points
+
+# Drop Pixel_Lat and Pixel_Lon
+maiac_data[, c("Pixel_Lat", "Pixel_Lon") := NULL]
+
+# Group by Date, Target_Lat, Target_Lon
+maiac_avg <- maiac_data[, lapply(.SD, function(x) mean(x, na.rm = TRUE)), 
+                        by = .(Date, Target_Lat, Target_Lon)]
+
+maiac_avg[, names(maiac_avg) := lapply(.SD, function(x) {
+  if (is.numeric(x)) x[is.nan(x)] <- NA
+  x
+})]
+```
+
+```{r}
+dim(maiac_avg)
+# Check NA
+na_counts <- colSums(is.na(maiac_avg))
+na_counts
+```
+
+```{r}
+head(maiac_avg)
+```
+
+## Merge with maiac_data
+```{r}
+merged_data <- merge(
+  maiac_avg,
+  location_data_daily,
+  by  = c("Target_Lat", "Target_Lon", "Date"),
+  all.y = TRUE
+)
+
+head(merged_data)
+```
+
+```{r}
+# Check the date range
+range(merged_data$Date)
+range(location_data_daily$Date)
+dim(merged_data)
+dim(location_data_daily)
+```
+
+## Adding the relevant Date columns
+```{r}
+# Add Julian Date
+library(lubridate)
+
+merged_data$julian_day <- as.numeric(merged_data$Date)
+```
+
+```{r}
+# Add day of the week
+merged_data$day_of_week <- wday(merged_data$Date, label = TRUE, abbr = FALSE)
+```
+
+```{r}
+# Add year and month
+merged_data <- merged_data %>% mutate(month = month(Date), year = year(Date))
+```
+
+```{r}
+# Modify the date of the week to a numeric column to add it in as a predictor
+merged_data$week_day_numeric <- wday(merged_data$Date)
+
+head(merged_data)
+```
+
+## Setup data so it can be used to make predictions
+```{r}
+names(merged_data)
+```
+
+```{r}
+fwrite(merged_data, "full_participants_era5_maiac.csv")
+```
+
+```{r}
+dim(maiac_avg)
+dim(location_data_daily)
+dim(merged_data)
+```
+
+```{r}
+only_in_location <- location_data_daily[!maiac_avg, on = .(Target_Lat, Target_Lon, Date)]
+only_in_location
+```
+
+```{r}
+range(only_in_location$Date)
+```
+
